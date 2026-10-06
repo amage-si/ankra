@@ -1,0 +1,12 @@
+/build/
+/target/
+*.log
+*.core
+core
+core.*
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+.DS_Store
