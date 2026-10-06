@@ -33,7 +33,7 @@ and X11 development headers/libraries. Running the example also needs an X11
 display, directly or through XWayland. Native Wayland support is not implemented.
 
 ```sh
-git clone https://github.com/amageweb/ankra.git Ankra
+git clone https://github.com/amage-si/ankra.git Ankra
 cd Ankra
 export BEND_NO_TELEMETRY=1
 bend version
@@ -69,7 +69,7 @@ loop finite.
 
 Images use the official `Base.Image` quadtree and packed RGB colors. For shapes,
 clipping, and alpha composition, pair Ankra with
-[Chromi](https://github.com/amageweb/chromi).
+[Chromi](https://github.com/amage-si/chromi).
 
 Read the [API reference](docs/api.md) or the complete
 [window example](examples/window.bend).
