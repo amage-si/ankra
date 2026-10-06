@@ -52,7 +52,7 @@ def x11_position(window: U32) ->
   import "./native/ankra.c"
   import "./native/ankra.js"
 
-def x11_native(window: U32) ->
+def x11_native(window: U32, display: U32) ->
   IO(Result<&1, &1, U32 & String, List<&2, U32>>):
   import "./native/ankra.c"
   import "./native/ankra.js"

@@ -46,7 +46,7 @@ def batch_order(batch: A.Batch) -> Bool:
 
 # A 640x400 window in slot 2 of display 1, focused and mapped at (10, 20).
 def win() -> W.Win:
-  W.Win{1, 2, 640, 400, 10.0, 20.0, True{}, True{}, Nil{}, True{}}
+  W.Win{1, 5, 2, 640, 400, 10.0, 20.0, True{}, True{}, Nil{}, True{}}
 
 def ev(+k: U32, +a: U32, +b: U32, +c: U32, +d: U32, +e: U32, +f: U32) -> List<&2, U32>:
   [k, 2, a, b, c, d, e, f]
@@ -137,7 +137,7 @@ def is_shown(es: List<&2, W.Input>, +v: Bool) -> Bool:
     case _: False{}
 
 def no_keys(w: W.Win) -> Bool:
-  W.Win{d, n, wd, h, x, y, f, v, k, r} = w
+  W.Win{d, pr, n, wd, h, x, y, f, v, k, r} = w
   U32.is_eq(U32.from_nat(List.length(&2, U32, k)), 0)
 
 # keysym, keycode, down, state, chars (count << 8 | byte), time

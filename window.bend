@@ -38,8 +38,11 @@ def options(title: String, +width: U32, +height: U32) -> Options:
 def background_word(+rgba: U32) -> U32:
   Bool.pick(U32, U32.is_eq((rgba .&. 255 : U32), 0), 4294967295, (rgba >> 8n : U32))
 
+# `display` is the connection Ankra reads events from and owns the window
+# on; `presenter` a second connection to the same server, handed to GPU
+# layers for their surface (see `native`).
 type Win is Data:
-  Win{display: U32, window: U32, width: U32, height: U32, x: F32, y: F32,
+  Win{display: U32, presenter: U32, window: U32, width: U32, height: U32, x: F32, y: F32,
     focused: Bool, visible: Bool, held: List<&2, U32>, detectable: Bool}
 
 type Input is Data:
@@ -62,41 +65,41 @@ type Input is Data:
 # ---------
 
 def width(w: Win) -> U32:
-  Win{d, n, width, h, x, y, f, v, k, r} = w
+  Win{d, pr, n, width, h, x, y, f, v, k, r} = w
   width
 
 def height(w: Win) -> U32:
-  Win{d, n, wd, height, x, y, f, v, k, r} = w
+  Win{d, pr, n, wd, height, x, y, f, v, k, r} = w
   height
 
 def focused(w: Win) -> Bool:
-  Win{d, n, wd, h, x, y, focused, v, k, r} = w
+  Win{d, pr, n, wd, h, x, y, focused, v, k, r} = w
   focused
 
 def position_x(w: Win) -> F32:
-  Win{d, n, wd, h, x, y, f, v, k, r} = w
+  Win{d, pr, n, wd, h, x, y, f, v, k, r} = w
   x
 
 def position_y(w: Win) -> F32:
-  Win{d, n, wd, h, x, y, f, v, k, r} = w
+  Win{d, pr, n, wd, h, x, y, f, v, k, r} = w
   y
 
 def visible(w: Win) -> Bool:
-  Win{d, n, wd, h, x, y, f, visible, k, r} = w
+  Win{d, pr, n, wd, h, x, y, f, visible, k, r} = w
   visible
 
 # Whether the server suppresses autorepeat's synthetic releases
 # (XkbSetDetectableAutoRepeat). Repeats are flagged either way.
 def detectable(w: Win) -> Bool:
-  Win{d, n, wd, h, x, y, f, v, k, detectable} = w
+  Win{d, pr, n, wd, h, x, y, f, v, k, detectable} = w
   detectable
 
 def display(w: Win) -> U32:
-  Win{display, n, wd, h, x, y, f, v, k, r} = w
+  Win{display, pr, n, wd, h, x, y, f, v, k, r} = w
   display
 
 def window(w: Win) -> U32:
-  Win{d, window, wd, h, x, y, f, v, k, r} = w
+  Win{d, pr, window, wd, h, x, y, f, v, k, r} = w
   window
 
 def valid_size(+width: U32, +height: U32) -> Bool:
@@ -215,9 +218,9 @@ def maybe_emit(go: Bool, d: Decode, ev: Input) -> Decode:
       keep(d)
 
 def configure.size(d: Decode, +w: U32, +h: U32) -> Decode:
-  Decode{Win{dp, n, +ow, +oh, x, y, f, v, k, r}, out, ask, rl, at} = d
+  Decode{Win{dp, pr, n, +ow, +oh, x, y, f, v, k, r}, out, ask, rl, at} = d
   maybe_emit(U32.is_ne(ow, w) || U32.is_ne(oh, h),
-    Decode{Win{dp, n, w, h, x, y, f, v, k, r}, out, ask, rl, at}, Resized{w, h})
+    Decode{Win{dp, pr, n, w, h, x, y, f, v, k, r}, out, ask, rl, at}, Resized{w, h})
 
 def configure.place(synthetic: Bool, d: Decode, +x: F32, +y: F32) -> Decode:
   match synthetic:
@@ -225,18 +228,18 @@ def configure.place(synthetic: Bool, d: Decode, +x: F32, +y: F32) -> Decode:
       Decode{win, out, ask, r, t} = d
       Decode{win, out, True{}, 0, 0}
     case True{}:
-      Decode{Win{dp, n, w, h, +ox, +oy, f, v, k, r}, out, ask, rl, at} = d
+      Decode{Win{dp, pr, n, w, h, +ox, +oy, f, v, k, r}, out, ask, rl, at} = d
       maybe_emit(F32.is_ne(ox, x) || F32.is_ne(oy, y),
-        Decode{Win{dp, n, w, h, x, y, f, v, k, r}, out, ask, rl, at}, Moved{x, y})
+        Decode{Win{dp, pr, n, w, h, x, y, f, v, k, r}, out, ask, rl, at}, Moved{x, y})
 
 def configure(d: Decode, +w: U32, +h: U32, +x: U32, +y: U32, +synthetic: U32) -> Decode:
   configure.place(U32.is_ne(synthetic, 0), configure.size(d, w, h), signed(x), signed(y))
 
 def focus.change(d: Decode, +gained: Bool) -> Decode:
-  Decode{Win{dp, n, w, h, x, y, +was, v, k, r}, out, ask, rl, at} = d
+  Decode{Win{dp, pr, n, w, h, x, y, +was, v, k, r}, out, ask, rl, at} = d
   +held = Bool.pick(List<&2, U32>, gained, k, Nil{})
   maybe_emit(Bool.xor(was, gained),
-    Decode{Win{dp, n, w, h, x, y, gained, v, held, r}, out, ask, rl, at}, Focused{gained})
+    Decode{Win{dp, pr, n, w, h, x, y, gained, v, held, r}, out, ask, rl, at}, Focused{gained})
 
 def focus.pick(ignored: Bool, d: Decode, +gained: Bool) -> Decode:
   match ignored:
@@ -250,10 +253,10 @@ def focus(d: Decode, +gained: U32, +mode: U32, +detail: U32) -> Decode:
     U32.is_eq(detail, 5), d, U32.is_ne(gained, 0))
 
 def shown(d: Decode, +mapped: U32) -> Decode:
-  Decode{Win{dp, n, w, h, x, y, f, +was, k, r}, out, ask, rl, at} = d
+  Decode{Win{dp, pr, n, w, h, x, y, f, +was, k, r}, out, ask, rl, at} = d
   +now = U32.is_ne(mapped, 0)
   maybe_emit(Bool.xor(was, now),
-    Decode{Win{dp, n, w, h, x, y, f, now, k, r}, out, ask, rl, at}, Shown{now})
+    Decode{Win{dp, pr, n, w, h, x, y, f, now, k, r}, out, ask, rl, at}, Shown{now})
 
 def drop_head(drop: Bool, xs: List<&2, Input>) -> List<&2, Input>:
   match drop xs:
@@ -265,17 +268,17 @@ def drop_head(drop: Bool, xs: List<&2, Input>) -> List<&2, Input>:
 # A press right after a release of the same key with the same timestamp is
 # X autorepeat without detection: drop that release, flag the press.
 def key.press(d: Decode, +code: U32, +keycode: U32, +mods: U32, +time: U32) -> Decode:
-  Decode{Win{dp, n, w, h, x, y, f, v, +held, r}, out, ask, +release, +at} = d
+  Decode{Win{dp, pr, n, w, h, x, y, f, v, +held, r}, out, ask, +release, +at} = d
   +pair = U32.is_ne(release, 0) && U32.is_eq(release, keycode) && U32.is_eq(at, time)
   +repeat = pair || has(held, keycode)
   +now = Bool.pick(List<&2, U32>, has(held, keycode), held, keycode <> held)
-  Decode{Win{dp, n, w, h, x, y, f, v, now, r},
+  Decode{Win{dp, pr, n, w, h, x, y, f, v, now, r},
     KeyDown{code, repeat, mods} <> drop_head(pair, out),
     ask, 0, 0}
 
 def key.release(d: Decode, +code: U32, +keycode: U32, +mods: U32, +time: U32) -> Decode:
-  Decode{Win{dp, n, w, h, x, y, f, v, held, r}, out, ask, rl, at} = d
-  Decode{Win{dp, n, w, h, x, y, f, v, without(held, keycode), r},
+  Decode{Win{dp, pr, n, w, h, x, y, f, v, held, r}, out, ask, rl, at} = d
+  Decode{Win{dp, pr, n, w, h, x, y, f, v, without(held, keycode), r},
     KeyUp{code, mods} <> out, ask, keycode, time}
 
 def key.pick(down: Bool, d: Decode, +code: U32, +keycode: U32, +mods: U32, +time: U32) -> Decode:
@@ -350,7 +353,7 @@ def one(k: U32, d: Decode, +a: U32, +b: U32, +c: U32, +e: U32, +f: U32, +g: U32)
       keep(d)
 
 def slot_of(d: Decode) -> U32:
-  Decode{Win{dp, n, w, h, x, y, f, v, k, r}, out, ask, rl, at} = d
+  Decode{Win{dp, pr, n, w, h, x, y, f, v, k, r}, out, ask, rl, at} = d
   n
 
 def step.mine(mine: Bool, d: Decode, +k: U32, +a: U32, +b: U32, +c: U32, +e: U32, +f: U32, +g: U32) -> Decode:
@@ -396,8 +399,11 @@ def open.window(o: Options, +dpy: U32) -> IO(Win):
       Bool.pick(U32, resizable, mh, h), Bool.pick(U32, resizable, 0, w),
       Bool.pick(U32, resizable, 0, h)))
     +repeat : U32 <- IO.try(U32, N.x11_autorepeat(dpy, True{}))
+    # A second connection for GPU presentation: driver threads that read
+    # it never consume the readiness of the connection events come from.
+    +presenter : U32 <- IO.try(U32, N.x11_connect())
     IO.try(Unit, N.x11_map(win))
-    return Win{dpy, win, w, h, 0.0, 0.0, False{}, False{}, Nil{}, U32.is_ne(repeat, 0)}
+    return Win{dpy, presenter, win, w, h, 0.0, 0.0, False{}, False{}, Nil{}, U32.is_ne(repeat, 0)}
 
 def open.connected(r: Result<&1, &1, U32 & String, U32>, o: Options) ->
   IO(Result<&1, &1, U32 & String, Win>):
@@ -428,13 +434,14 @@ def open(o: Options) -> IO(Result<&1, &1, U32 & String, Win>):
   Options{t, +w, +h, r, mw, mh, c, bg} = o
   open.checked(valid_size(w, h), Options{t, w, h, r, mw, mh, c, bg})
 
-# Destroys the window, then its display connection. Answers how many native
-# objects the bridge still holds (0 when nothing leaked). Destroy every GPU
-# surface made from the window first.
+# Destroys the window, then its presentation and event connections.
+# Answers how many native objects the bridge still holds (0 when nothing
+# leaked). Destroy every GPU surface made from the window first.
 def close(w: Win) -> IO(U32):
-  Win{+dpy, +win, wd, h, x, y, f, v, k, r} = w
+  Win{+dpy, +pr, +win, wd, h, x, y, f, v, k, r} = w
   do IO<U32>:
     IO.try(Unit, N.x11_destroy(win))
+    IO.try(Unit, N.x11_destroy(pr))
     IO.try(Unit, N.x11_destroy(dpy))
     IO.try(U32, N.x11_live())
 
@@ -443,10 +450,18 @@ def set_title(+w: Win, title: String) -> IO(Win):
     IO.try(Unit, N.x11_title(window(w), title))
     return w
 
+def presenter(w: Win) -> U32:
+  Win{d, presenter, n, wd, h, x, y, f, v, k, r} = w
+  presenter
+
 # The native handle for a GPU surface: [1 (Xlib), Display* high word,
-# Display* low word, Window id, screen]. Valid until `close`.
-def native(w: Win) -> IO(List<&2, U32>):
-  IO.try(List<&2, U32>, N.x11_native(window(w)))
+# Display* low word, Window id, screen]. The display is Ankra's dedicated
+# presentation connection, not the one events are read from: a Vulkan
+# driver reads its connection from its own threads, and on a shared one
+# it consumed the socket's readiness, delaying input until some later
+# event (measured: about 0.8 s per synthetic click). Valid until `close`.
+def native(+w: Win) -> IO(List<&2, U32>):
+  IO.try(List<&2, U32>, N.x11_native(window(w), presenter(w)))
 
 # Waiting
 # -------
@@ -456,8 +471,8 @@ def placed.at(moved: Bool, w: Win, es: List<&2, Input>, +x: F32, +y: F32) -> Win
     case False{}:
       (w, es)
     case True{}:
-      Win{dp, n, wd, h, ox, oy, f, v, k, r} = w
-      (Win{dp, n, wd, h, x, y, f, v, k, r}, List.append(&2, Input, es, [Moved{x, y}]))
+      Win{dp, pr, n, wd, h, ox, oy, f, v, k, r} = w
+      (Win{dp, pr, n, wd, h, x, y, f, v, k, r}, List.append(&2, Input, es, [Moved{x, y}]))
 
 def placed(at: List<&2, U32>, +w: Win, es: List<&2, Input>) -> Win & List<&2, Input>:
   match at:

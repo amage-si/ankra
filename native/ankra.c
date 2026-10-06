@@ -350,18 +350,21 @@ static void __attribute__((constructor)) ak_x11_position_use(void) {
 
 #ifdef CID(x11_native)
 
-// The native handle a GPU layer needs for a presentation surface:
-// [1 (Xlib), Display* high word, Display* low word, Window id, screen].
-// The display stays owned by Ankra and must outlive every surface made
-// from it.
+// The native handle a GPU layer needs for a presentation surface, on the
+// display connection Bend chose for presenting (Ankra opens a dedicated
+// one, so a driver reading it never consumes the readiness of the event
+// connection): [1 (Xlib), Display* high word, Display* low word, window
+// id, screen]. The display stays owned by Ankra and must outlive every
+// surface made from it.
 Term ak_x11_native_run(Env e, Term* f, IoWork* w) {
   AkSlot* s = ak_get((u32)f[0], AK_WINDOW);
-  if (s == NULL) {
-    return AK_BAD(e, "window");
+  AkSlot* d = ak_get((u32)f[1], AK_DISPLAY);
+  if (s == NULL || d == NULL) {
+    return AK_BAD(e, "window or display");
   }
-  u64 p = (u64)(uintptr_t)s->dpy;
+  u64 p = (u64)(uintptr_t)d->dpy;
   u32 out[5] = { 1, (u32)(p >> 32), (u32)p, (u32)s->xid,
-    (u32)DefaultScreen(s->dpy) };
+    (u32)DefaultScreen(d->dpy) };
   return io_done(e, ak_list(e, out, 5));
 }
 
