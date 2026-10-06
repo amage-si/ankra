@@ -8,8 +8,15 @@ a roadmap item is not implemented merely because it appears in the project scope
 
 - Implement library logic in Bend 2, rather than wrapping an equivalent toolkit
   written in another language.
+- The native bridge (`native/ankra.c` and its JS twin) stays thin and
+  explicit: one effect per Xlib call, or a field-by-field translation of an
+  Xlib event into words. Decisions belong in Bend: event masks, size hints,
+  focus filtering, key repeat and codes, position queries, timeouts, the
+  loop's policy. If a new native call is needed, add the smallest one and
+  document it in `docs/bridge.md`.
 - The official Bend compiler/runtime, OS APIs, and drivers remain external
-  dependencies. Keep any future native bridge minimal, explicit, and separate.
+  dependencies. The official-runtime backend (`main.bend`) stays as the
+  portable fallback.
 - Before writing Bend, run `bend version` and read `bend guide` from the installed
   toolchain. Verify available syntax/effects instead of assuming old examples work.
 - Keep source, comments, documentation, and commit messages in English.
@@ -30,6 +37,8 @@ quality. Introduce abstractions from concrete needs.
 - Favor simple, maintainable code. Pursue fast, polished behavior with evidence.
 - Run relevant native checks after changes. Validate affected visual interactions
   on a real window when changing visible behavior, then close the window.
+  Capture only the window being tested (its toplevel, never a screen region),
+  and do not change desktop settings.
 - Compilation is not visual proof. Runtime checks are not proofs of the entire
   system. State partial support and unverified behavior explicitly.
 - Build sequentially. Do not impose virtual-address limits on the Bend runtime

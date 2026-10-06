@@ -1,8 +1,10 @@
 # Contributing to Ankra
 
-Use Bend 2.0.35 for the current baseline. Read `bend guide` before editing Bend
-and keep project text in English. Library implementation belongs in Bend; the
-official runtime and operating system remain external dependencies.
+Use Bend 2.0.35 for the current baseline. Read `bend guide` (and
+`bend guide effects` before touching the bridge) and keep project text in
+English. Library implementation belongs in Bend; the native bridge stays a
+thin layer of Xlib calls; the official runtime and operating system remain
+external dependencies.
 
 ## Validation
 
@@ -13,13 +15,17 @@ export BEND_NO_TELEMETRY=1
 mkdir -p build
 bend tests.bend -o build/tests
 ./build/tests --threads 2 --gpu off
+bend examples/native.bend -o build/native
 bend examples/window.bend -o build/window
 ```
 
-When a change affects visible behavior, also run the example in an X11/XWayland
-session. Check input, the affected rendering scenario, and normal window closure.
-A successful build alone does not validate the user experience. The native core
-tests run without a display.
+When a change affects the native window or its events, run `build/native` in
+an X11/XWayland session: resize and move the window, change focus, close it
+normally, and read the printed events (the last line reports 0 native
+objects left). When it affects the official backend, run `build/window`.
+A successful build alone does not validate the user experience. The native
+core tests run without a display. GPU presentation is exercised by Voltra's
+examples and Chromi's `examples/eco`.
 
 Build one target at a time. The native Bend runtime reserves substantial virtual
 address space; a virtual-memory limit is not a resident-memory limit. Preserve
