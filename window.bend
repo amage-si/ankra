@@ -497,11 +497,58 @@ def waited(d: Win & List<&2, Input> & Bool) -> IO(Win & List<&2, Input>):
   (es, ask) = rest
   asked(ask, w, es)
 
-# Waits up to `ms` milliseconds for events: 0 polls, `forever()` waits
-# without a deadline. The wait parks on the X connection: an idle window
-# costs no CPU and no wakeups. Answers the next window state and the
-# decoded events in order (possibly none, after a timeout).
-def wait(+w: Win, ms: U32) -> IO(Win & List<&2, Input>):
+# One wait on the connection, decoded.
+def wait.once(+w: Win, ms: U32) -> IO(Win & List<&2, Input>):
   do IO<Win & List<&2, Input>>:
     +ws : List<&2, U32> <- IO.try(List<&2, U32>, N.x11_wait(display(w), ms))
     waited(decode(ws, w))
+
+# The milliseconds left before `due`, or `forever()` without a deadline.
+def wait.left(+forever: Bool, +due: Nat, +now: Nat) -> U32:
+  Bool.pick(U32, forever, 4294967295, U32.from_nat(Nat.sub(due, now)))
+
+def wait.over(+forever: Bool, +due: Nat, +now: Nat) -> Bool:
+  Bool.not(forever) && Bool.not(Nat.is_lt(now, due))
+
+def wait.sorted(es: List<&2, Input>, +w: Win, +over: Bool,
+  again: Win -> IO(Win & List<&2, Input>)) -> IO(Win & List<&2, Input>):
+  match es over:
+    case Nil{} False{}:
+      again(w)
+    case xs _:
+      IO.pure(Win & List<&2, Input>, (w, xs))
+
+def wait.until(n: Nat, got: Win & List<&2, Input>, +forever: Bool, +due: Nat) -> IO(Win & List<&2, Input>):
+  match n:
+    case 0n:
+      IO.pure(Win & List<&2, Input>, got)
+    case 1n+p:
+      (+w, es) = got
+      do IO<Win & List<&2, Input>>:
+        +now : Nat <- IO.now()
+        wait.sorted(es, w, wait.over(forever, due, now), ww => IO.bind(Win & List<&2, Input>,
+          Win & List<&2, Input>, wait.once(ww, wait.left(forever, due, now)),
+          g => wait.until(p, g, forever, due)))
+
+def wait.timed(+w: Win, +ms: U32) -> IO(Win & List<&2, Input>):
+  +forever = U32.is_eq(ms, forever())
+  do IO<Win & List<&2, Input>>:
+    +start : Nat <- IO.now()
+    got : Win & List<&2, Input> <- wait.once(w, ms)
+    wait.until(4294967295n, got, forever, Nat.add(start, U32.to_nat(ms)))
+
+def wait.pick(poll: Bool, +w: Win, +ms: U32) -> IO(Win & List<&2, Input>):
+  match poll:
+    case True{}:
+      wait.once(w, 0)
+    case False{}:
+      wait.timed(w, ms)
+
+# Waits up to `ms` milliseconds for events: 0 polls, `forever()` waits
+# without a deadline. The wait parks on the X connection: an idle window
+# costs no CPU and no wakeups. Answers the next window state and the
+# decoded events in order. An empty list means the deadline passed: X
+# events that decode to nothing (a configure that changed nothing, an
+# ignored focus change) do not end the wait early.
+def wait(+w: Win, +ms: U32) -> IO(Win & List<&2, Input>):
+  wait.pick(U32.is_eq(ms, 0), w, ms)
