@@ -12,7 +12,7 @@ function ankra_unsupported() {
 }
 
 for (const id of [
-  CID(x11_connect), CID(x11_screen), CID(x11_create),
+  CID(x11_connect), CID(x11_create),
   CID(x11_protocols), CID(x11_title), CID(x11_class),
   CID(x11_size_hints), CID(x11_autorepeat), CID(x11_map),
   CID(x11_position), CID(x11_native), CID(x11_wait),

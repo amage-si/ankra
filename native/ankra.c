@@ -118,28 +118,6 @@ static void __attribute__((constructor)) ak_x11_connect_use(void) {
 
 #endif
 
-#ifdef CID(x11_screen)
-
-// The default screen's fields (Xlib macros; no request):
-// [screen, width, height, widthMM, heightMM, depth].
-Term ak_x11_screen_run(Env e, Term* f, IoWork* w) {
-  AkSlot* d = ak_get((u32)f[0], AK_DISPLAY);
-  if (d == NULL) {
-    return AK_BAD(e, "display");
-  }
-  int s = DefaultScreen(d->dpy);
-  u32 out[6] = { (u32)s, (u32)DisplayWidth(d->dpy, s),
-    (u32)DisplayHeight(d->dpy, s), (u32)DisplayWidthMM(d->dpy, s),
-    (u32)DisplayHeightMM(d->dpy, s), (u32)DefaultDepth(d->dpy, s) };
-  return io_done(e, ak_list(e, out, 6));
-}
-
-static void __attribute__((constructor)) ak_x11_screen_use(void) {
-  io_eff(CID(x11_screen), ak_x11_screen_run, 0);
-}
-
-#endif
-
 // Windows
 // -------
 

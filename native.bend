@@ -10,10 +10,6 @@ def x11_connect() -> IO(Result<&1, &1, U32 & String, U32>):
   import "./native/ankra.c"
   import "./native/ankra.js"
 
-def x11_screen(display: U32) -> IO(Result<&1, &1, U32 & String, List<&2, U32>>):
-  import "./native/ankra.c"
-  import "./native/ankra.js"
-
 def x11_create(display: U32, x: U32, y: U32, width: U32, height: U32,
   events: U32, background: U32) -> IO(Result<&1, &1, U32 & String, U32>):
   import "./native/ankra.c"
