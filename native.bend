@@ -58,6 +58,31 @@ def x11_wait(display: U32, ms: U32) ->
   import "./native/ankra.c"
   import "./native/ankra.js"
 
+def x11_input(window: U32) -> IO(Result<&1, &1, U32 & String, U32>):
+  import "./native/ankra.c"
+  import "./native/ankra.js"
+
+def x11_clip_own(window: U32, time: U32) ->
+  IO(Result<&1, &1, U32 & String, U32>):
+  import "./native/ankra.c"
+  import "./native/ankra.js"
+
+def x11_clip_reply(window: U32, requestor: U32, property: U32, target: U32,
+  format: U32, time: U32, text: String) ->
+  IO(Result<&1, &1, U32 & String, Unit>):
+  import "./native/ankra.c"
+  import "./native/ankra.js"
+
+def x11_clip_ask(window: U32, time: U32) ->
+  IO(Result<&1, &1, U32 & String, Unit>):
+  import "./native/ankra.c"
+  import "./native/ankra.js"
+
+def x11_clip_take(window: U32, limit: U32) ->
+  IO(Result<&1, &1, U32 & String, String>):
+  import "./native/ankra.c"
+  import "./native/ankra.js"
+
 def x11_destroy(slot: U32) -> IO(Result<&1, &1, U32 & String, Unit>):
   import "./native/ankra.c"
   import "./native/ankra.js"

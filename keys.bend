@@ -65,6 +65,16 @@ def code.found(m: Maybe<&2, U32>, +sym: U32, +chars: U32, +keycode: U32) -> U32:
 def code(+sym: U32, +keycode: U32, +chars: U32) -> U32:
   code.found(lookup(table(), sym), sym, chars, keycode)
 
+# The character of a keysym, for text without an input method: Latin-1
+# keysyms (0x20-0x7E, 0xA0-0xFF) are their character, 0x01000000 + c is
+# the Unicode scalar c (surrogates excluded); anything else is 0 (no
+# text: dead keys, function keys, keypad).
+def unicode(+sym: U32) -> U32:
+  +u = (sym - 16777216 : U32)
+  Bool.pick(U32, (U32.is_ge(sym, 32) && U32.is_le(sym, 126)) || (U32.is_ge(sym, 160) && U32.is_le(sym, 255)), sym,
+    Bool.pick(U32, U32.is_ge(sym, 16777216) && U32.is_le(u, 1114111) &&
+      Bool.not(U32.is_ge(u, 55296) && U32.is_le(u, 57343)), u, 0))
+
 # Modifier bits delivered with key and pointer events.
 def shift() -> U32:
   1

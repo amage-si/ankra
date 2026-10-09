@@ -16,6 +16,8 @@ for (const id of [
   CID(x11_protocols), CID(x11_title), CID(x11_class),
   CID(x11_size_hints), CID(x11_autorepeat), CID(x11_map),
   CID(x11_position), CID(x11_native), CID(x11_wait),
+  CID(x11_input), CID(x11_clip_own), CID(x11_clip_reply),
+  CID(x11_clip_ask), CID(x11_clip_take),
   CID(x11_destroy), CID(x11_live),
 ]) {
   io_eff(id, ankra_unsupported);

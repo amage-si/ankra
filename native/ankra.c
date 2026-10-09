@@ -22,8 +22,10 @@
 // argument, 24 (EMFILE) when the slot table is full, 95 (ENOTSUP) when no
 // X display is reachable.
 
+#include <locale.h>
 #include <poll.h>
 #include <X11/Xlib.h>
+#include <X11/Xatom.h>
 #include <X11/Xutil.h>
 #include <X11/XKBlib.h>
 
@@ -32,12 +34,19 @@
 
 enum { AK_FREE, AK_DISPLAY, AK_WINDOW };
 
+// Atoms a display interns once, on first use (ak_atoms).
+enum { AK_CLIPBOARD, AK_UTF8, AK_TARGETS, AK_STRING, AK_TEXT, AK_PASTE,
+  AK_INCR, AK_ATOMS };
+
 typedef struct {
   u32      kind;
   u32      display;  // a window's display slot
   Display* dpy;
   Window   xid;      // a window's X id
   Atom     close;    // WM_DELETE_WINDOW once x11_protocols ran
+  XIM      im;       // a display's input method once x11_input ran
+  XIC      ic;       // a window's input context once x11_input ran
+  Atom     atom[AK_ATOMS];  // a display's atoms, None until ak_atoms
 } AkSlot;
 
 #define AK_SLOTS 256
@@ -85,6 +94,48 @@ static Term ak_list(Env e, const u32* w, u32 n) {
     xs = io_node(e, CID(Con), (Term)w[i - 1], xs);
   }
   return xs;
+}
+
+// The atoms of a display slot, interned with one request the first time.
+static Atom* ak_atoms(AkSlot* d) {
+  if (d->atom[0] == None) {
+    static char* names[AK_ATOMS] = { "CLIPBOARD", "UTF8_STRING", "TARGETS",
+      "STRING", "TEXT", "ANKRA_PASTE", "INCR" };
+    XInternAtoms(d->dpy, names, AK_ATOMS, False, d->atom);
+  }
+  return d->atom;
+}
+
+// The display slot of a live window slot (Bend destroys windows first).
+static AkSlot* ak_display_of(AkSlot* s) {
+  return s == NULL ? NULL : ak_get(s->display, AK_DISPLAY);
+}
+
+// Strict UTF-8 to scalars: no overlong forms, surrogates or values past
+// U+10FFFF. Answers the count, or -1 at the first invalid byte. `out` may
+// be NULL to count only.
+static int64_t ak_utf8(const u8* p, u64 n, u32* out) {
+  int64_t m = 0;
+  for (u64 i = 0; i < n; m += 1) {
+    u32 b = p[i], c, k;
+    if (b < 0x80) { c = b; k = 0; }
+    else if (b >= 0xC2 && b <= 0xDF) { c = b & 0x1F; k = 1; }
+    else if (b >= 0xE0 && b <= 0xEF) { c = b & 0x0F; k = 2; }
+    else if (b >= 0xF0 && b <= 0xF4) { c = b & 0x07; k = 3; }
+    else { return -1; }
+    if (i + k >= n) { return -1; }
+    for (u32 j = 1; j <= k; j += 1) {
+      if ((p[i + j] & 0xC0) != 0x80) { return -1; }
+      c = (c << 6) | (p[i + j] & 0x3F);
+    }
+    if ((k == 2 && (c < 0x800 || (c >= 0xD800 && c <= 0xDFFF)))
+      || (k == 3 && (c < 0x10000 || c > 0x10FFFF))) {
+      return -1;
+    }
+    if (out != NULL) { out[m] = c; }
+    i += k + 1;
+  }
+  return m;
 }
 
 static Term ak_slot_done(Env e, AkSlot s) {
@@ -357,7 +408,8 @@ static void __attribute__((constructor)) ak_x11_native_use(void) {
 
 #ifdef CID(x11_wait)
 
-// Each event is eight words: kind, window slot, then a b c d e f.
+// Each record is eight words: kind, window slot, then a b c d e f. One X
+// event gives one record, none, or (a key press with text) several.
 //  1 close      (WM_DELETE_WINDOW)
 //  2 configure  width height x y synthetic
 //  3 expose     x y width height count
@@ -367,20 +419,92 @@ static void __attribute__((constructor)) ak_x11_native_use(void) {
 //  7 focus      in mode detail
 //  8 crossing   enter x y mode detail state
 //  9 map        mapped
+// 10 text       n|more<<8|keysym<<16 c1 c2 c3 c4 state
+// 11 request    requestor property target_code time clipboard target
+// 12 clear      clipboard time
+// 13 notify     ok clipboard
 // Signed values travel as 32-bit two's complement. `keysym` and `chars`
 // come from XLookupString with only Shift and Lock applied (Ctrl and Alt do
 // not change the symbol); `chars` is count << 8 | first byte; `state` is
 // the event's full modifier mask. MappingNotify refreshes Xlib's keymap
 // cache (XRefreshKeyboardMapping), which XLookupString needs.
+//
+// Text follows its key record. With an input context (x11_input), events
+// pass through XFilterEvent first (the input method takes dead keys and
+// compose sequences, then puts back a press with keycode 0 that carries
+// the result), and Xutf8LookupString's text crosses as scalars, four per
+// record, `more` set on every record but the last. Without one, the record
+// holds the keysym of XLookupString on the full state (keysym bit set) and
+// Bend maps it. target_code: 1 TARGETS, 2 UTF8_STRING, 3 STRING, 4 TEXT,
+// 0 anything else (the atom itself is the last word).
 #define AK_EVENT_WORDS 8
 
-static u32 ak_event(XEvent* ev, u32* k) {
+typedef struct {
+  u32* w;
+  u32  n;
+  u32  cap;
+} AkOut;
+
+static void ak_push(AkOut* o, const u32* k) {
+  if (o->n + AK_EVENT_WORDS > o->cap) {
+    o->cap = o->cap == 0 ? 256 : o->cap * 2;
+    o->w = io_mem(realloc(o->w, o->cap * sizeof(u32)));
+  }
+  memcpy(o->w + o->n, k, AK_EVENT_WORDS * sizeof(u32));
+  o->n += AK_EVENT_WORDS;
+}
+
+static void ak_text(AkSlot* s, u32 slot, XKeyEvent* key, AkOut* o) {
+  u32 state = key->state;
+  KeySym sym = NoSymbol;
+  if (s->ic == NULL) {
+    char c[8];
+    XLookupString(key, c, sizeof c, &sym, NULL);
+    if (sym != NoSymbol) {
+      u32 k[AK_EVENT_WORDS] = { 10, slot, 1 | 1u << 16, (u32)sym, 0, 0, 0,
+        state };
+      ak_push(o, k);
+    }
+    return;
+  }
+  char buf[64];
+  char* p = buf;
+  Status st = XLookupNone;
+  int n = Xutf8LookupString(s->ic, key, p, sizeof buf, &sym, &st);
+  if (st == XBufferOverflow) {
+    p = io_mem(malloc((size_t)n));
+    n = Xutf8LookupString(s->ic, key, p, n, &sym, &st);
+  }
+  if ((st == XLookupChars || st == XLookupBoth) && n > 0) {
+    u32* cs = io_mem(malloc((size_t)n * sizeof(u32)));
+    int64_t m = ak_utf8((const u8*)p, (u64)n, cs);
+    for (int64_t i = 0; i < m; i += 4) {
+      u32 c = (u32)(m - i < 4 ? m - i : 4);
+      u32 k[AK_EVENT_WORDS] = { 10, slot, c | (u32)(i + 4 < m) << 8, cs[i],
+        c > 1 ? cs[i + 1] : 0, c > 2 ? cs[i + 2] : 0, c > 3 ? cs[i + 3] : 0,
+        state };
+      ak_push(o, k);
+    }
+    free(cs);
+  }
+  if (p != buf) {
+    free(p);
+  }
+}
+
+static u32 ak_target(Atom* a, Atom t) {
+  return t == a[AK_TARGETS] ? 1 : t == a[AK_UTF8] ? 2 : t == a[AK_STRING] ? 3
+    : t == a[AK_TEXT] ? 4 : 0;
+}
+
+static void ak_event(AkSlot* d, XEvent* ev, AkOut* o) {
+  u32 k[AK_EVENT_WORDS] = { 0 };
   if (ev->type == ClientMessage) {
     u32 win = ak_window_of(ev->xany.display, ev->xclient.window);
     AkSlot* s = win != 0 ? &ak_slot[win] : NULL;
     if (s == NULL || s->close == 0 || ev->xclient.format != 32
       || (Atom)ev->xclient.data.l[0] != s->close) {
-      return 0;
+      return;
     }
     k[0] = 1;
   } else if (ev->type == ConfigureNotify) {
@@ -420,37 +544,49 @@ static u32 ak_event(XEvent* ev, u32* k) {
     k[7] = ev->xcrossing.state;
   } else if (ev->type == MapNotify || ev->type == UnmapNotify) {
     k[0] = 9; k[2] = ev->type == MapNotify;
+  } else if (ev->type == SelectionRequest) {
+    XSelectionRequestEvent* r = &ev->xselectionrequest;
+    Atom* a = ak_atoms(d);
+    k[0] = 11; k[2] = (u32)r->requestor; k[3] = (u32)r->property;
+    k[4] = ak_target(a, r->target); k[5] = (u32)r->time;
+    k[6] = r->selection == a[AK_CLIPBOARD]; k[7] = (u32)r->target;
+  } else if (ev->type == SelectionClear) {
+    k[0] = 12; k[2] = ev->xselectionclear.selection == ak_atoms(d)[AK_CLIPBOARD];
+    k[3] = (u32)ev->xselectionclear.time;
+  } else if (ev->type == SelectionNotify) {
+    k[0] = 13; k[2] = ev->xselection.property != None;
+    k[3] = ev->xselection.selection == ak_atoms(d)[AK_CLIPBOARD];
   } else if (ev->type == MappingNotify) {
     XRefreshKeyboardMapping(&ev->xmapping);
-    return 0;
+    return;
   } else {
-    return 0;
+    return;
   }
   k[1] = ak_window_of(ev->xany.display, ev->xany.window);
-  return k[1] != 0;
+  if (k[1] == 0) {
+    return;
+  }
+  ak_push(o, k);
+  if (ev->type == KeyPress) {
+    ak_text(&ak_slot[k[1]], k[1], &ev->xkey, o);
+  }
 }
 
 // Drains the events already received (XPending reads what the socket holds
-// without blocking) into one word list.
-static Term ak_events(Env e, Display* dpy) {
-  u32 cap = 0, n = 0;
-  u32* evs = NULL;
-  while (XPending(dpy) > 0) {
+// without blocking) into one word list. With an input method, an event it
+// filters (part of a dead-key or compose sequence) gives no record.
+static Term ak_events(Env e, AkSlot* d) {
+  AkOut o = { 0 };
+  while (XPending(d->dpy) > 0) {
     XEvent ev;
-    XNextEvent(dpy, &ev);
-    u32 k[AK_EVENT_WORDS] = { 0 };
-    if (!ak_event(&ev, k)) {
+    XNextEvent(d->dpy, &ev);
+    if (d->im != NULL && XFilterEvent(&ev, None)) {
       continue;
     }
-    if (n + AK_EVENT_WORDS > cap) {
-      cap = cap == 0 ? 256 : cap * 2;
-      evs = io_mem(realloc(evs, cap * sizeof(u32)));
-    }
-    memcpy(evs + n, k, sizeof k);
-    n += AK_EVENT_WORDS;
+    ak_event(d, &ev, &o);
   }
-  Term list = ak_list(e, evs, n);
-  free(evs);
+  Term list = ak_list(e, o.w, o.n);
+  free(o.w);
   return list;
 }
 
@@ -466,7 +602,7 @@ static Term ak_x11_wait_more(Env e, IoWork* w) {
     return io_wait_on(w, ConnectionNumber(d->dpy), POLLIN, due,
       ak_x11_wait_more);
   }
-  return io_done(e, ak_events(e, d->dpy));
+  return io_done(e, ak_events(e, d));
 }
 
 // Waits up to `ms` for events on a display: 0 polls, 4294967295 waits
@@ -480,7 +616,7 @@ Term ak_x11_wait_run(Env e, Term* f, IoWork* w) {
     return AK_BAD(e, "display");
   }
   if (ms == 0 || XPending(d->dpy) > 0) {
-    return io_done(e, ak_events(e, d->dpy));
+    return io_done(e, ak_events(e, d));
   }
   w->hand = (intptr_t)id;
   w->size = ms == 0xFFFFFFFFu ? 0 : io_tick() + (u64)ms * 1000000ull;
@@ -494,13 +630,253 @@ static void __attribute__((constructor)) ak_x11_wait_use(void) {
 
 #endif
 
+// Text input
+// ----------
+
+#ifdef CID(x11_input)
+
+// Opens Xlib's built-in input method for the window's display (once) and
+// an input context on the window: XSetLocaleModifiers("@im=none") selects
+// the local method (dead keys, compose sequences, AltGr levels; no IME
+// server), XOpenIM, XCreateIC (no preedit, no status), XSetICFocus. Xlib
+// takes the locale's charset and compose table at XOpenIM, so LC_CTYPE is
+// set from the environment for that call and put back afterwards: the
+// rest of the program never runs under a changed locale. Answers 1 with
+// an input context, 0 without one (text then crosses as keysyms).
+Term ak_x11_input_run(Env e, Term* f, IoWork* w) {
+  AkSlot* s = ak_get((u32)f[0], AK_WINDOW);
+  AkSlot* d = ak_display_of(s);
+  if (s == NULL || d == NULL) {
+    return AK_BAD(e, "window");
+  }
+  if (d->im == NULL) {
+    const char* was = setlocale(LC_CTYPE, NULL);
+    char* old = was != NULL ? strdup(was) : NULL;
+    if (setlocale(LC_CTYPE, "") != NULL && XSupportsLocale()
+      && XSetLocaleModifiers("@im=none") != NULL) {
+      d->im = XOpenIM(d->dpy, NULL, NULL, NULL);
+    }
+    setlocale(LC_CTYPE, old != NULL ? old : "C");
+    free(old);
+  }
+  if (d->im != NULL && s->ic == NULL) {
+    s->ic = XCreateIC(d->im, XNInputStyle, XIMPreeditNothing
+      | XIMStatusNothing, XNClientWindow, s->xid, XNFocusWindow, s->xid,
+      NULL);
+    if (s->ic != NULL) {
+      XSetICFocus(s->ic);
+    }
+  }
+  return io_done(e, (Term)(u32)(s->ic != NULL));
+}
+
+static void __attribute__((constructor)) ak_x11_input_use(void) {
+  io_eff(CID(x11_input), ak_x11_input_run, 0);
+}
+
+#endif
+
+// Clipboard
+// ---------
+//
+// The CLIPBOARD selection, as ICCCM describes it. Ownership, what to answer
+// a request and when to ask are decided in Bend (clipboard.bend). Transfers
+// are whole properties: no INCR, so text is bounded by the server's maximum
+// request size on the way out and by Bend's limit on the way in.
+
+static int ak_ignore(Display* dpy, XErrorEvent* err) {
+  return 0;
+}
+
+#ifdef CID(x11_clip_own)
+
+// XSetSelectionOwner(CLIPBOARD, window, time), then XGetSelectionOwner to
+// see whether the server took it (a time older than the current owner's
+// is refused). Answers 1 when the window owns the clipboard.
+Term ak_x11_clip_own_run(Env e, Term* f, IoWork* w) {
+  AkSlot* s = ak_get((u32)f[0], AK_WINDOW);
+  AkSlot* d = ak_display_of(s);
+  if (s == NULL || d == NULL) {
+    return AK_BAD(e, "window");
+  }
+  Atom clip = ak_atoms(d)[AK_CLIPBOARD];
+  XSetSelectionOwner(s->dpy, clip, s->xid, (Time)(u32)f[1]);
+  return io_done(e, (Term)(u32)(XGetSelectionOwner(s->dpy, clip) == s->xid));
+}
+
+static void __attribute__((constructor)) ak_x11_clip_own_use(void) {
+  io_eff(CID(x11_clip_own), ak_x11_clip_own_run, 0);
+}
+
+#endif
+
+#ifdef CID(x11_clip_reply)
+
+// Answers a SelectionRequest: XChangeProperty on the requestor in the
+// format Bend chose, then XSendEvent(SelectionNotify) and XSync. format: 0
+// refuse (property None), 1 TARGETS with STRING, 2 TARGETS without
+// STRING, 3 the text as UTF8_STRING, 4 the text as STRING (Latin-1; a
+// scalar past 255 is EINVAL). Text past the server's request size is
+// refused (no INCR). A requestor gone meanwhile raises X errors that are
+// ignored for this call instead of ending the program.
+Term ak_x11_clip_reply_run(Env e, Term* f, IoWork* w) {
+  u64 n = 0;
+  char* text = io_cstr(e, f[6], &n);
+  AkSlot* s = ak_get((u32)f[0], AK_WINDOW);
+  AkSlot* d = ak_display_of(s);
+  u32 format = (u32)f[4];
+  if (s == NULL || d == NULL || format > 4) {
+    free(text);
+    return AK_BAD(e, "window or clipboard format");
+  }
+  Atom* a = ak_atoms(d);
+  Window requestor = (Window)(u32)f[1];
+  Atom property = (Atom)(u32)f[2];
+  u64 room = (u64)XExtendedMaxRequestSize(s->dpy);
+  room = (room != 0 ? room : (u64)XMaxRequestSize(s->dpy)) * 4 - 64;
+  XErrorHandler old = XSetErrorHandler(ak_ignore);
+  Bool sent = True;
+  if (format == 1 || format == 2) {
+    Atom list[4] = { a[AK_TARGETS], a[AK_UTF8], a[AK_TEXT], a[AK_STRING] };
+    XChangeProperty(s->dpy, requestor, property, XA_ATOM, 32,
+      PropModeReplace, (unsigned char*)list, format == 1 ? 4 : 3);
+  } else if (format == 3 && n <= room) {
+    XChangeProperty(s->dpy, requestor, property, a[AK_UTF8], 8,
+      PropModeReplace, (unsigned char*)text, (int)n);
+  } else if (format == 4 && n <= room) {
+    u32* cs = io_mem(malloc((n + 1) * sizeof(u32)));
+    int64_t m = ak_utf8((const u8*)text, n, cs);
+    for (int64_t i = 0; i < m; i += 1) {
+      sent = sent && cs[i] <= 255;
+      text[i] = (char)cs[i];
+    }
+    free(cs);
+    if (m < 0 || !sent) {
+      XSetErrorHandler(old);
+      free(text);
+      return AK_BAD(e, "Latin-1 text");
+    }
+    XChangeProperty(s->dpy, requestor, property, XA_STRING, 8,
+      PropModeReplace, (unsigned char*)text, (int)m);
+  } else {
+    sent = False;
+  }
+  XSelectionEvent r = { 0 };
+  r.type = SelectionNotify;
+  r.display = s->dpy;
+  r.requestor = requestor;
+  r.selection = a[AK_CLIPBOARD];
+  r.target = (Atom)(u32)f[3];
+  r.property = sent && format != 0 ? property : None;
+  r.time = (Time)(u32)f[5];
+  XSendEvent(s->dpy, requestor, False, NoEventMask, (XEvent*)&r);
+  XSync(s->dpy, False);
+  XSetErrorHandler(old);
+  free(text);
+  return AK_UNIT(e);
+}
+
+static void __attribute__((constructor)) ak_x11_clip_reply_use(void) {
+  io_eff(CID(x11_clip_reply), ak_x11_clip_reply_run, 0);
+}
+
+#endif
+
+#ifdef CID(x11_clip_ask)
+
+// XConvertSelection(CLIPBOARD, UTF8_STRING) into the window's ANKRA_PASTE
+// property, then XFlush. The owner's answer arrives as a notify record.
+Term ak_x11_clip_ask_run(Env e, Term* f, IoWork* w) {
+  AkSlot* s = ak_get((u32)f[0], AK_WINDOW);
+  AkSlot* d = ak_display_of(s);
+  if (s == NULL || d == NULL) {
+    return AK_BAD(e, "window");
+  }
+  Atom* a = ak_atoms(d);
+  XConvertSelection(s->dpy, a[AK_CLIPBOARD], a[AK_UTF8], a[AK_PASTE], s->xid,
+    (Time)(u32)f[1]);
+  XFlush(s->dpy);
+  return AK_UNIT(e);
+}
+
+static void __attribute__((constructor)) ak_x11_clip_ask_use(void) {
+  io_eff(CID(x11_clip_ask), ak_x11_clip_ask_run, 0);
+}
+
+#endif
+
+#ifdef CID(x11_clip_take)
+
+// XGetWindowProperty(ANKRA_PASTE, delete) after a notify: UTF8_STRING as
+// strict UTF-8, STRING as Latin-1, into a String of at most `limit`
+// scalars. Fails with 61 (ENODATA) when the property is missing, 27
+// (EFBIG) for INCR or text past the limit, 84 (EILSEQ) for invalid UTF-8,
+// 95 (ENOTSUP) for another type.
+Term ak_x11_clip_take_run(Env e, Term* f, IoWork* w) {
+  AkSlot* s = ak_get((u32)f[0], AK_WINDOW);
+  AkSlot* d = ak_display_of(s);
+  u32 limit = (u32)f[1];
+  if (s == NULL || d == NULL) {
+    return AK_BAD(e, "window");
+  }
+  Atom* a = ak_atoms(d);
+  Atom type = None;
+  int format = 0;
+  unsigned long count = 0, after = 0;
+  unsigned char* data = NULL;
+  // UTF-8 takes at most 4 bytes per scalar: 4 * limit bytes, one more
+  // 32-bit unit to see whether the text goes past it.
+  if (XGetWindowProperty(s->dpy, s->xid, a[AK_PASTE], 0, (long)limit + 1,
+      True, AnyPropertyType, &type, &format, &count, &after, &data)
+      != Success) {
+    return io_fail(e, 61, "Ankra: no clipboard text");
+  }
+  if (after != 0) {
+    XDeleteProperty(s->dpy, s->xid, a[AK_PASTE]);
+  }
+  Term r;
+  int64_t m = 0;
+  if (type == None) {
+    r = io_fail(e, 61, "Ankra: no clipboard text");
+  } else if (type == a[AK_INCR] || after != 0) {
+    r = io_fail(e, 27, "Ankra: clipboard text too large");
+  } else if (format != 8 || (type != a[AK_UTF8] && type != XA_STRING)) {
+    r = io_fail(e, 95, "Ankra: clipboard text in an unsupported type");
+  } else if (type == a[AK_UTF8]
+      && (m = ak_utf8(data, count, NULL)) < 0) {
+    r = io_fail(e, 84, "Ankra: clipboard text is not valid UTF-8");
+  } else if ((type == a[AK_UTF8] ? (u64)m : (u64)count) > limit) {
+    r = io_fail(e, 27, "Ankra: clipboard text too large");
+  } else if (type == a[AK_UTF8]) {
+    r = io_done(e, io_str(e, (const char*)data, count));
+  } else {
+    char* u = io_mem(malloc(count * 2 + 1));
+    u64 k = 0;
+    for (unsigned long i = 0; i < count; i += 1) {
+      k += io_utf8(u + k, data[i]);
+    }
+    r = io_done(e, io_str(e, u, k));
+    free(u);
+  }
+  if (data != NULL) {
+    XFree(data);
+  }
+  return r;
+}
+
+static void __attribute__((constructor)) ak_x11_clip_take_use(void) {
+  io_eff(CID(x11_clip_take), ak_x11_clip_take_run, 0);
+}
+
+#endif
+
 // Lifetimes
 // ---------
 
 #ifdef CID(x11_destroy)
 
-// XDestroyWindow for a window slot (then XFlush), XCloseDisplay for a
-// display slot. Bend destroys windows before their display.
+// XDestroyIC (if any) and XDestroyWindow for a window slot (then XFlush),
+// XCloseIM (if any) and XCloseDisplay for a display slot. Bend destroys windows before their display.
 Term ak_x11_destroy_run(Env e, Term* f, IoWork* w) {
   u32 id = (u32)f[0];
   if (id == 0 || id >= AK_SLOTS || ak_slot[id].kind == AK_FREE) {
@@ -508,9 +884,15 @@ Term ak_x11_destroy_run(Env e, Term* f, IoWork* w) {
   }
   AkSlot* s = &ak_slot[id];
   if (s->kind == AK_WINDOW) {
+    if (s->ic != NULL) {
+      XDestroyIC(s->ic);
+    }
     XDestroyWindow(s->dpy, s->xid);
     XFlush(s->dpy);
   } else {
+    if (s->im != NULL) {
+      XCloseIM(s->im);
+    }
     XCloseDisplay(s->dpy);
   }
   *s = (AkSlot){ 0 };

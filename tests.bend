@@ -3,6 +3,7 @@ import ./main.bend as A
 import ./window.bend as W
 import ./keys.bend as Keys
 import ./app.bend as Loop
+import ./clipboard.bend as C
 
 # Native checks that run without a display: the official-runtime loop's
 # batching and bounds (main.bend), and the native backend's decoding of
@@ -46,24 +47,31 @@ def batch_order(batch: A.Batch) -> Bool:
 
 # A 640x400 window in slot 2 of display 1, focused and mapped at (10, 20).
 def win() -> W.Win:
-  W.Win{1, 5, 2, 640, 400, 10.0, 20.0, True{}, True{}, Nil{}, True{}}
+  W.Win{1, 5, 2, 640, 400, 10.0, 20.0, True{}, True{}, Nil{}, True{}, 0}
 
 def ev(+k: U32, +a: U32, +b: U32, +c: U32, +d: U32, +e: U32, +f: U32) -> List<&2, U32>:
   [k, 2, a, b, c, d, e, f]
 
-def events.of(r: W.Win & List<&2, W.Input> & Bool) -> List<&2, W.Input>:
+def events.of(r: W.Win & List<&2, W.Input> & Bool & Bool) -> List<&2, W.Input>:
   (w, rest) = r
-  (es, ask) = rest
+  (es, flags) = rest
   es
 
-def state.of(r: W.Win & List<&2, W.Input> & Bool) -> W.Win:
+def state.of(r: W.Win & List<&2, W.Input> & Bool & Bool) -> W.Win:
   (w, rest) = r
   w
 
-def asks.of(r: W.Win & List<&2, W.Input> & Bool) -> Bool:
+def asks.of(r: W.Win & List<&2, W.Input> & Bool & Bool) -> Bool:
   (w, rest) = r
-  (es, ask) = rest
+  (es, flags) = rest
+  (ask, paste) = flags
   ask
+
+def pastes.of(r: W.Win & List<&2, W.Input> & Bool & Bool) -> Bool:
+  (w, rest) = r
+  (es, flags) = rest
+  (ask, paste) = flags
+  paste
 
 def events(ws: List<&2, U32>) -> List<&2, W.Input>:
   events.of(W.decode(ws, win()))
@@ -73,6 +81,9 @@ def state(ws: List<&2, U32>) -> W.Win:
 
 def asks(ws: List<&2, U32>) -> Bool:
   asks.of(W.decode(ws, win()))
+
+def pastes(ws: List<&2, U32>) -> Bool:
+  pastes.of(W.decode(ws, win()))
 
 def none(es: List<&2, W.Input>) -> Bool:
   match es:
@@ -137,12 +148,67 @@ def is_shown(es: List<&2, W.Input>, +v: Bool) -> Bool:
     case _: False{}
 
 def no_keys(w: W.Win) -> Bool:
-  W.Win{d, pr, n, wd, h, x, y, f, v, k, r} = w
+  W.Win{d, pr, n, wd, h, x, y, f, v, k, r, tm} = w
   U32.is_eq(U32.from_nat(List.length(&2, U32, k)), 0)
 
 # keysym, keycode, down, state, chars (count << 8 | byte), time
 def key(+sym: U32, +code: U32, +down: U32, +state: U32, +chars: U32, +time: U32) -> List<&2, U32>:
   [4, 2, sym, code, down, state, chars, time]
+
+# Text and clipboard
+# ------------------
+
+# A text record: count | more << 8 | keysym << 16, four scalars, state.
+def txt(+flags: U32, +a: U32, +b: U32, +c: U32, +d: U32, +state: U32) -> List<&2, U32>:
+  [10, 2, flags, a, b, c, d, state]
+
+def cat(xs: List<&2, List<&2, U32>>) -> List<&2, U32>:
+  List.concat(&2, U32, xs)
+
+def chars(s: String) -> List<&2, U32>:
+  match s:
+    case SNil{}: Nil{}
+    case SCon{Chr{c}, rest}: c <> chars(rest)
+
+# Events as words: KeyDown code repeat, KeyUp 1000 code, TextTyped 2000
+# then its scalars, clipboard events 3000 + kind and their fields.
+def trace(es: List<&2, W.Input>) -> List<&2, U32>:
+  match es:
+    case Nil{}: Nil{}
+    case Con{W.KeyDown{c, r, m}, rest}: c <> Bool.to_u32(r) <> trace(rest)
+    case Con{W.KeyUp{c, m}, rest}: 1000 <> c <> trace(rest)
+    case Con{W.TextTyped{t}, rest}: 2000 <> List.append(&2, U32, chars(t), trace(rest))
+    case Con{W.Clipboard{W.Asked{W.Request{q, p, t, tm, a}}}, rest}: 3001 <> q <> p <> t <> tm <> a <> trace(rest)
+    case Con{W.Clipboard{W.Lost{}}, rest}: 3002 <> trace(rest)
+    case Con{W.Clipboard{W.Pasted{t}}, rest}: 3003 <> List.append(&2, U32, chars(t), trace(rest))
+    case Con{W.Clipboard{W.PasteFailed{c}}, rest}: 3004 <> c <> trace(rest)
+    case Con{e, rest}: 9999 <> trace(rest)
+
+def traced(ws: List<&2, U32>) -> List<&2, U32>:
+  trace(events(ws))
+
+def request(+target: U32) -> W.Request:
+  W.Request{77, 88, target, 5, 99}
+
+def is_refused(a: C.Answer) -> Bool:
+  match a:
+    case C.Refuse{}: True{}
+    case _: False{}
+
+def is_targets(a: C.Answer, +latin1: Bool) -> Bool:
+  match a:
+    case C.Targets{l}: Bool.not(Bool.xor(l, latin1))
+    case _: False{}
+
+def is_utf8(a: C.Answer, +want: String) -> Bool:
+  match a:
+    case C.Utf8{t}: String.eq(t, want)
+    case _: False{}
+
+def is_latin1(a: C.Answer, +want: String) -> Bool:
+  match a:
+    case C.Latin1{t}: String.eq(t, want)
+    case _: False{}
 
 # The loop's decisions
 # --------------------
@@ -206,4 +272,39 @@ def main() -> IO(Unit):
     check(continued(Loop.next(U32, False{}, win(), Loop.Redraw{8}, False{}), 8, True{}, W.forever()), "loop: Redraw marks the content stale")
     check(continued(Loop.next(U32, False{}, win(), Loop.Sleep{9, 50}, False{}), 9, False{}, 50), "loop: Sleep sets the next deadline")
     check(finished(Loop.next(U32, False{}, win(), Loop.Stop{3}, False{}), 3), "loop: Stop hands the final state back")
-    IO.print("41 Ankra checks passed")
+    check(same(traced(cat([key(97, 38, 1, 0, 353, 5), txt(1, 97, 0, 0, 0, 0)])), [97, 0, 2000, 97]), "text: KeyDown, then TextTyped a")
+    check(same(traced(cat([key(0, 0, 1, 0, 0, 5), txt(1, 227, 0, 0, 0, 0)])), [2000, 227]), "text: an input method's result (keycode 0) is text without a KeyDown")
+    check(same(traced(cat([key(97, 38, 1, 0, 353, 5), txt(260, 111, 108, 225, 32, 0), txt(1, 120, 0, 0, 0, 0)])), [97, 0, 2000, 111, 108, 225, 32, 120]),
+      "text: a 5-scalar commit split across records is one TextTyped")
+    check(same(traced(cat([key(99, 54, 1, 4, 355, 5), txt(1, 3, 0, 0, 0, 4)])), [99, 0]), "text: Ctrl+C (0x03) types nothing")
+    check(same(traced(cat([key(65293, 36, 1, 0, 269, 5), txt(1, 13, 0, 0, 0, 0), key(65288, 22, 1, 0, 264, 6), txt(1, 127, 0, 0, 0, 0), txt(2, 133, 97, 0, 0, 0)])), [13, 0, 127, 0, 2000, 97]),
+      "text: C0, DEL and C1 controls are not text")
+    check(same(traced(cat([txt(1, 99, 0, 0, 0, 4), txt(1, 99, 0, 0, 0, 8), txt(1, 99, 0, 0, 0, 64)])), []), "text: none while Ctrl, Alt or Super is held")
+    check(same(traced(cat([txt(1, 47, 0, 0, 0, 128), txt(1, 65, 0, 0, 0, 1)])), [2000, 47, 2000, 65]), "text: AltGr (Mod5) and Shift keep the text")
+    check(same(traced(cat([txt(65537, 231, 0, 0, 0, 0), txt(65537, 16785580, 0, 0, 0, 0), txt(65537, 65105, 0, 0, 0, 0)])), [2000, 231, 2000, 8364]),
+      "text: keysym fallback maps 0xE7 to ç, 0x10020AC to €, dead_acute to nothing")
+    check(U32.is_eq(Keys.unicode(126), 126) && U32.is_eq(Keys.unicode(160), 160) && U32.is_eq(Keys.unicode(65288), 0) &&
+      U32.is_eq(Keys.unicode(16832512), 0), "text: Keys.unicode bounds (ASCII, NBSP, BackSpace, a surrogate)")
+    check(same(traced(cat([key(97, 38, 1, 0, 353, 5), txt(1, 97, 0, 0, 0, 0), key(97, 38, 1, 0, 353, 40), txt(1, 97, 0, 0, 0, 0),
+      key(97, 38, 1, 0, 353, 70), txt(1, 97, 0, 0, 0, 0)])), [97, 0, 2000, 97, 97, 1, 2000, 97, 97, 1, 2000, 97]),
+      "text: a held key repeats KeyDown with one TextTyped each")
+    check(same(traced(cat([key(97, 38, 1, 0, 353, 7), txt(1, 97, 0, 0, 0, 0), key(97, 38, 0, 0, 353, 40), key(97, 38, 1, 0, 353, 40),
+      txt(1, 97, 0, 0, 0, 0)])), [97, 0, 2000, 97, 97, 1, 2000, 97]),
+      "text: release+press with one timestamp still collapses with text records around it")
+    check(same(traced(cat([ev(11, 77, 88, 2, 5, 1, 99), ev(11, 77, 0, 3, 5, 1, 31), ev(11, 77, 88, 2, 5, 0, 99)])), [3001, 77, 88, 2, 5, 99, 3001, 77, 31, 3, 5, 31]),
+      "clipboard: requests decode (no property means the target atom; PRIMARY is not ours)")
+    check(same(traced(cat([ev(12, 1, 9, 0, 0, 0, 0), ev(12, 0, 9, 0, 0, 0, 0), ev(13, 0, 1, 0, 0, 0, 0)])), [3002, 3004, 61]),
+      "clipboard: lost ownership, and a refused paste fails with 61")
+    check(pastes(ev(13, 1, 1, 0, 0, 0, 0)) && none(events(ev(13, 1, 1, 0, 0, 0, 0))) && Bool.not(pastes(ev(13, 1, 0, 0, 0, 0, 0))),
+      "clipboard: an answered paste is read after the batch")
+    check(U32.is_eq(W.time(state(cat([key(97, 38, 1, 0, 353, 5), ev(5, 5, 6, 1, 1, 0, 812)]))), 812) &&
+      U32.is_eq(W.time(state(key(97, 38, 0, 0, 353, 640))), 640) && U32.is_eq(W.time(win()), 0), "time: key and button events stamp the window")
+    check(is_targets(C.answer(C.Clip{True{}, "ação"}, request(1)), True{}) && is_targets(C.answer(C.Clip{True{}, "5 €"}, request(1)), False{}),
+      "clipboard answer: TARGETS lists STRING only for Latin-1 text")
+    check(is_utf8(C.answer(C.Clip{True{}, "5 €"}, request(2)), "5 €") && is_latin1(C.answer(C.Clip{True{}, "ã"}, request(3)), "ã"),
+      "clipboard answer: UTF8_STRING, and STRING for Latin-1 text")
+    check(is_refused(C.answer(C.Clip{True{}, "5 €"}, request(3))) && is_utf8(C.answer(C.Clip{True{}, "5 €"}, request(4)), "5 €") &&
+      is_latin1(C.answer(C.Clip{True{}, "ã"}, request(4)), "ã"), "clipboard answer: € refused as STRING; TEXT falls back to UTF-8")
+    check(is_refused(C.answer(C.Clip{True{}, "a"}, request(0))) && is_refused(C.answer(C.Clip{False{}, "a"}, request(2))) &&
+      is_refused(C.answer(C.none(), request(1))), "clipboard answer: unknown target, or a clipboard not owned, is refused")
+    IO.print("61 Ankra checks passed")
