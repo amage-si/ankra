@@ -8,7 +8,7 @@ loop: draw only when something changed, sleep while nothing does, and hand the
 final state back when the window closes. The library is written in Bend 2; the
 only native code is a thin, documented bridge of Xlib calls.
 
-**Status:** early Linux implementation, tested with **Bend 2.0.35** on
+**Status:** early Linux implementation, tested with **Bend 2.0.36** on
 X11/XWayland (Hyprland 0.56). The first priority is a polished, reliable
 experience on the development Linux machine. Compatibility layers will follow
 proven progress.

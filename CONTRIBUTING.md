@@ -1,6 +1,6 @@
 # Contributing to Ankra
 
-Use Bend 2.0.35 for the current baseline. Read `bend guide` (and
+Use Bend 2.0.36 for the current baseline. Read `bend guide` (and
 `bend guide effects` before touching the bridge) and keep project text in
 English. Library implementation belongs in Bend; the native bridge stays a
 thin layer of Xlib calls; the official runtime and operating system remain

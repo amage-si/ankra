@@ -26,6 +26,9 @@ in [native.bend](../native.bend).
   `x11_watch`, it parks on an epoll set holding the connection and one
   more descriptor instead, and a wake for that descriptor ends the wait
   with a kind-14 record.
+- **Registration.** Each effect registers as `io_eff(CID(name), run)` (the
+  Bend 2.0.36 form): the loop runs it at once, and an effect that waits
+  parks itself with `io_wait_on`, as `x11_wait` does.
 - **Linking.** Including `<X11/Xlib.h>` makes `bend` link libX11, the same
   rule the official Window effect relies on; XKB is part of libX11.
 - **Failures** answer `Fail{(code, text)}`: 22 (EINVAL) for a bad slot or
