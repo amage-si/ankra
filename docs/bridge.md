@@ -22,14 +22,17 @@ in [native.bend](../native.bend).
 - **Waiting.** `x11_wait` drains events already read; with none, it parks
   on the connection's socket with `io_wait_on` (and an optional deadline),
   so the runtime's event loop sleeps in the kernel. A wake that brought no
-  event (a reply, a partial read) parks again until the deadline.
+  event (a reply, a partial read) parks again until the deadline. After
+  `x11_watch`, it parks on an epoll set holding the connection and one
+  more descriptor instead, and a wake for that descriptor ends the wait
+  with a kind-14 record.
 - **Linking.** Including `<X11/Xlib.h>` makes `bend` link libX11, the same
   rule the official Window effect relies on; XKB is part of libX11.
 - **Failures** answer `Fail{(code, text)}`: 22 (EINVAL) for a bad slot or
   argument, 24 (EMFILE) when the slot table is full, 95 (ENOTSUP) when no
   display is reachable; `x11_clip_take` adds the codes in its row.
 
-Size: 920 lines (675 non-blank, non-comment), 18 effects, each
+Size: 1006 lines, 19 effects, each
 with its `#ifdef` guard and registration.
 
 ## Effects
@@ -49,6 +52,7 @@ All answer `IO(Result<&1, &1, U32 & String, T>)`.
 | `x11_position(window)` | `XTranslateCoordinates` to the root | → `[x, y]` (two's complement words) |
 | `x11_native(window, display)` | none (fields) | → `[1, Display* high, Display* low, window id, screen]` for `display` |
 | `x11_wait(display, ms)` | `XPending`/`XNextEvent` (+ `XFilterEvent` with an input method); parks with `io_wait_on` | 0 polls, 4294967295 no deadline. → event words (below) |
+| `x11_watch(display, fd)` | `epoll_create1` + `epoll_ctl` (once), `epoll_ctl` per call | Waits on `display` also end when `fd` is readable; 0xFFFFFFFF stops watching. The epoll set is closed with the display. → Unit |
 | `x11_input(window)` | `setlocale(LC_CTYPE)` + `XSetLocaleModifiers("@im=none")` + `XOpenIM` (once per display), `XCreateIC` + `XSetICFocus` | → 1 with an input context, 0 without (text then crosses as keysyms). See [Text](#text). |
 | `x11_clip_own(window, time)` | `XSetSelectionOwner(CLIPBOARD)` + `XGetSelectionOwner` | → 1 when the window owns the clipboard |
 | `x11_clip_reply(window, requestor, property, target, format, time, text)` | `XChangeProperty` on the requestor + `XSendEvent(SelectionNotify)` + `XSync` | `target` is the requested atom (repeated in the notify). `format`: 0 refuse (property None), 1 TARGETS with STRING, 2 TARGETS without STRING, 3 `text` as UTF8_STRING, 4 `text` as STRING (Latin-1; a scalar past 255 is EINVAL). Text past the server's maximum request size is refused (no INCR). X errors during the call (a requestor that vanished) are ignored instead of ending the program. → Unit |
@@ -78,6 +82,7 @@ travel as 32-bit two's complement.
 | 11 | `SelectionRequest` | requestor property target_code time clipboard target |
 | 12 | `SelectionClear` | clipboard time |
 | 13 | `SelectionNotify` | ok clipboard |
+| 14 | (none: the descriptor of `x11_watch` is readable; window slot 0, so `decode` skips it and `wait` ends) | — |
 
 `keysym` and `chars` (count << 8 | first byte) come from `XLookupString`
 with only Shift and Lock applied, as Base's window does; `state` is the full

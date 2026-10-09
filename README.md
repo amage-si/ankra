@@ -53,6 +53,9 @@ captured (`grim -T`).
 - Key repeat without guesswork: XKB detectable autorepeat when the server
   offers it (XWayland does), and collapsing of release+press pairs with one
   timestamp when it does not.
+- `watch(win, fd)`: waits also end when another descriptor is readable (an
+  accessibility bus socket, for one), through an epoll set in the bridge,
+  so an app with two event sources still sleeps without a timer.
 - `wait(win, ms)`: 0 polls, any timeout, or no deadline. The wait parks on the
   X connection inside Bend's event loop: no thread spins, no timer fires.
 - `app.run`: draws when the content is stale, waits without a deadline when
@@ -63,7 +66,7 @@ captured (`grim -T`).
 
 How it was verified on the development machine:
 
-- **61 native checks** (`tests.bend`, no display needed): the official
+- **62 native checks** (`tests.bend`, no display needed): the official
   loop's batching and bounds, and the native backend's decoding of event
   words (configure, focus filtering, keys and repeats, text records and
   their policy, clipboard records, buttons, wheel, motion coalescing,
@@ -87,7 +90,10 @@ How it was verified on the development machine:
 - **Idle:** the native example waited 5 s with 0 CPU ticks and 0 wakeups of
   its only thread (3.6 MiB resident). With the input context created it still
   waited 5 s with 0 CPU ticks and 0 context switches. The integrated GPU demo waited 10 s
-  with 0 frames and 0 wakeups of its main thread.
+  with 0 frames and 0 wakeups of its main thread. With Auvia attached and its
+  bus socket watched (`watch`), the demo still idled 10 s with 0 frames and
+  0 main-thread wakeups, and Auvia's counter went from about 21 main-thread
+  wakeups per second (a 50 ms poll of the bus) to 0.
 - **Input latency:** synthetic clicks and keys sent to the window were
   handled at once with the dedicated presentation connection; with a single
   connection shared with the Vulkan driver they waited about 0.8 s for some

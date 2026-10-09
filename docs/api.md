@@ -42,6 +42,14 @@ at (0, 0), at the requested size; events bring the real values.
 milliseconds (the list may then be empty). The wait parks on the X connection
 in Bend's event loop.
 
+`watch(win, fd)` (`IO(Win)`) makes every later wait also end when the file
+descriptor `fd` is readable or hung up: a second event source, such as an
+accessibility bus socket, without a polling timer. Such a wait answers the
+window's events, possibly none; the app then reads `fd` itself (reading it
+until it would block keeps the next wait asleep). `watch(win, unwatched())`
+stops; a descriptor closed later stops counting by itself. Auvia's
+`descriptor(service)` gives the bus socket's descriptor.
+
 | `Input` | Meaning |
 | --- | --- |
 | `Resized{width, height}` | The window's size changed (physical pixels). |
