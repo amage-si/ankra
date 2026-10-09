@@ -7,8 +7,7 @@ patch version (0.1.1) only fixes. Ankra is built from source together with its
 sibling AMAGE libraries; the set of versions tested together is listed in
 [eco-build's releases](https://github.com/amage-si/eco-build/tree/main/releases).
 
-## [Unreleased]
-
+## [0.2.0] - 2026-10-09
 ### Added
 
 - Animation in the loop: `Loop.animate(S, state)` (a `Sleep` with the
@@ -69,5 +68,6 @@ of AMAGE Eco 0.1.0.
 - `app.run` loop that draws only when stale and returns the final state.
 - 62 native checks.
 
+[0.2.0]: https://github.com/amage-si/ankra/releases/tag/v0.2.0
 [0.1.1]: https://github.com/amage-si/ankra/releases/tag/v0.1.1
 [0.1.0]: https://github.com/amage-si/ankra/releases/tag/v0.1.0
