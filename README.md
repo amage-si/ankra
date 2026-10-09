@@ -41,6 +41,15 @@ captured (`grim -T`).
   `PointerDown`/`PointerUp` (Base's button numbering), `PointerEntered`,
   `PointerLeft` and `Wheel`. Key codes follow Base's convention, so code
   written for the official window reads the same numbers.
+- Text input: `TextTyped{text}` after each key press that types, through
+  Xlib's built-in input method, so dead keys, compose sequences and AltGr
+  levels work with any XKB layout (br-abnt2 here: `´ a` is á, AltGr+q is
+  /). Controls and Ctrl/Alt/Super shortcuts are not text; the policy is in
+  Bend.
+- The clipboard (`clipboard.bend`): copy (own CLIPBOARD and answer
+  TARGETS, UTF8_STRING, STRING and TEXT requests) and paste (the owner's
+  answer arrives as `Clipboard{Pasted{text}}`), with a pure `answer`
+  policy; it interoperates with X and, through XWayland, Wayland clients.
 - Key repeat without guesswork: XKB detectable autorepeat when the server
   offers it (XWayland does), and collapsing of release+press pairs with one
   timestamp when it does not.
@@ -54,18 +63,30 @@ captured (`grim -T`).
 
 How it was verified on the development machine:
 
-- **41 native checks** (`tests.bend`, no display needed): the official
+- **61 native checks** (`tests.bend`, no display needed): the official
   loop's batching and bounds, and the native backend's decoding of event
-  words (configure, focus filtering, keys and repeats, buttons, wheel,
-  motion coalescing, expose, map, close), key codes and modifiers, and the
-  loop's decisions.
+  words (configure, focus filtering, keys and repeats, text records and
+  their policy, clipboard records, buttons, wheel, motion coalescing,
+  expose, map, close), key codes and modifiers, the clipboard's answer
+  policy, and the loop's decisions.
 - **Real window** (`examples/native.bend`, events printed): a resize by the
   window manager arrived as `resized 640x400`, moves as `moved to 200,150`,
   focusing the window and focusing another one as `focus in`/`focus out`,
   the window manager's close as `close requested`; exit 0 with 0 native
   objects left.
+- **Text and clipboard** (`examples/native.bend`, br-abnt2 keymap,
+  `XMODIFIERS=@im=fcitx` in the environment): keys sent to the window with
+  XSendEvent (`xdotool key --window`) and, with the window focused, with
+  XTest (`xdotool key`) printed `text "á"` for `´ a`, `text "ã"` for
+  `~ a`, `text "ç"`, `text "/"` for AltGr+q, `text "õ"` and `text "é"`.
+  Ctrl+C took the clipboard, and both `xclip -o` (X) and `wl-paste`
+  (Wayland, through the compositor's bridge) printed `Ankra: ação`. After
+  `wl-copy olá`, Ctrl+V printed `pasted "olá"` 1-2 ms after the request.
+  Hyprland hands a Wayland clipboard to X clients only while an X window
+  has focus: unfocused, the paste failed with 61.
 - **Idle:** the native example waited 5 s with 0 CPU ticks and 0 wakeups of
-  its only thread (3.6 MiB resident). The integrated GPU demo waited 10 s
+  its only thread (3.6 MiB resident). With the input context created it still
+  waited 5 s with 0 CPU ticks and 0 context switches. The integrated GPU demo waited 10 s
   with 0 frames and 0 wakeups of its main thread.
 - **Input latency:** synthetic clicks and keys sent to the window were
   handled at once with the dedicated presentation connection; with a single
@@ -133,14 +154,16 @@ window, then `A.close(win)`. Read the [API reference](docs/api.md) and the
 
 ## The native bridge
 
-`native/ankra.c` (538 lines, 381 non-blank and non-comment) with its JS twin
-(`native/ankra.js`, which answers ENOTSUP) exposes **13 effects**: one Xlib
-call each, or a field-by-field translation of an Xlib event into words:
-`x11_connect`, `x11_create`, `x11_protocols`, `x11_title`, `x11_class`,
-`x11_size_hints`, `x11_autorepeat`, `x11_map`, `x11_position`, `x11_native`,
-`x11_wait`, `x11_destroy`, `x11_live`. Which events to select, which focus
-changes count, how keys map to codes, when to ask for the position, and how
-long to wait are decided in Bend.
+`native/ankra.c` (920 lines, 675 non-blank and non-comment) with its
+JS twin (`native/ankra.js`, which answers ENOTSUP) exposes **18 effects**:
+one Xlib call each (or one protocol step), or a field-by-field translation
+of an Xlib event into words: `x11_connect`, `x11_create`, `x11_protocols`,
+`x11_title`, `x11_class`, `x11_size_hints`, `x11_autorepeat`, `x11_map`,
+`x11_position`, `x11_native`, `x11_wait`, `x11_input`, `x11_clip_own`,
+`x11_clip_reply`, `x11_clip_ask`, `x11_clip_take`, `x11_destroy`,
+`x11_live`. Which events to select, which focus changes count, how keys map
+to codes, which characters are text, what a clipboard request gets, when to
+ask for the position, and how long to wait are decided in Bend.
 
 ## Current boundaries
 
@@ -148,8 +171,15 @@ long to wait are decided in Bend.
   (Voltra), or use the official backend for CPU images.
 - X11/XWayland only. Native Wayland, other platforms, multiple windows per
   display connection and monitor/scale discovery are not implemented.
-- No text input or IME (keys only), no clipboard, no cursor shapes, no
-  high-resolution scrolling (wheel notches only), no programmatic resize.
+- Text input uses Xlib's local input method only: no IME server (fcitx,
+  ibus), so no preedit and no candidate window for CJK input yet. Without
+  an input method (an unsupported locale), text comes from keysyms and dead
+  keys do not compose.
+- Clipboard: CLIPBOARD and text only. No PRIMARY (middle-click paste), no
+  INCR transfers (a paste over 4096 scalars fails, a copy over the server's
+  request size is refused), no images or other types.
+- No cursor shapes, no high-resolution scrolling (wheel notches only), no
+  programmatic resize.
 - `wait` watches the X connection only: an app with another event source
   (a socket) uses `Sleep` with a deadline.
 - Window position is the one the window manager reports through X11; under a
@@ -163,6 +193,7 @@ long to wait are decided in Bend.
 | --- | --- |
 | [window.bend](window.bend) | Native window: options, open/close, events and their decoding, wait, native handle. |
 | [app.bend](app.bend) | Application loop over the native window. |
+| [clipboard.bend](clipboard.bend) | The CLIPBOARD selection: copy, paste, serving requests, the answer policy. |
 | [keys.bend](keys.bend) | Key codes (Base's convention) and modifier bits. |
 | [native.bend](native.bend), [native/](native/) | The X11 bridge's effect declarations, C implementation and JS twin. |
 | [main.bend](main.bend) | Official-runtime backend: window lifecycle and loop over `Base.Window`. |
@@ -173,8 +204,8 @@ long to wait are decided in Bend.
 
 ## Direction
 
-Next: one wait over several event sources, text input, scale discovery, and
-native Wayland. Each capability needs a working Linux example and measured
+Next: one wait over several event sources, IME (fcitx through XIM, with
+preedit), scale discovery, and native Wayland. Each capability needs a working Linux example and measured
 behavior before broader platform support. These are goals, not supported
 features.
 

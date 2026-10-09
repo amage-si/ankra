@@ -8,6 +8,7 @@ the `Ankra` directory uses:
 import Base
 import ./Ankra/window.bend as A      # native X11 window
 import ./Ankra/app.bend as Loop      # its application loop
+import ./Ankra/clipboard.bend as Clip # the CLIPBOARD selection
 import ./Ankra/main.bend as Official # the official-runtime backend
 ```
 
@@ -27,10 +28,11 @@ import ./Ankra/main.bend as Official # the official-runtime backend
 ### State
 
 `Win{display, presenter, window, width, height, x, y, focused, visible, held,
-detectable}` is `Data`: native slots and what Ankra knows about the window.
-`wait` returns the next value; use the accessors `width`, `height`,
+detectable, time}` is `Data`: native slots and what Ankra knows about the
+window. `wait` returns the next value; use the accessors `width`, `height`,
 `position_x`, `position_y`, `focused`, `visible`, `detectable` (whether the
-server suppresses autorepeat releases). The window starts unmapped, unfocused,
+server suppresses autorepeat releases) and `time` (the X server time of the
+last key or button event, 0 before any; clipboard requests carry it). The window starts unmapped, unfocused,
 at (0, 0), at the requested size; events bring the real values.
 
 ### Events
@@ -54,6 +56,8 @@ in Bend's event loop.
 | `PointerDown{x, y, button, mods}`, `PointerUp{...}` | Buttons 0 primary, 1 secondary, 2 middle, 3 back, 4 forward. |
 | `PointerEntered{x, y}`, `PointerLeft{}` | Crossing caused by grabs or inferior windows is ignored. |
 | `Wheel{x, y, dx, dy}` | One notch per event, as Base: up `dy = 1`, down `-1`, left `dx = 1`, right `-1`. |
+| `TextTyped{text}` | The text one key press produced, right after its `KeyDown`: a character, an AltGr level, or a completed dead-key/compose sequence (whose final press has no `KeyDown`). Never contains controls (C0, DEL, C1); never sent while Ctrl, Alt or Super is held (AltGr types). A held key gives one per repeat. |
+| `Clipboard{event}` | `ClipEvent`: `Asked{Request{requestor, property, target, time, atom}}` (another client wants the clipboard this app owns: answer with `Clip.serve`), `Lost{}` (another client took the clipboard), `Pasted{text}` (the answer to `Clip.paste`), `PasteFailed{code}` (61 no owner or refused, 27 too large or INCR, 84 invalid UTF-8, 95 unsupported type). |
 
 Helpers: `closing(events)`, `exposed(events)`, `resized(events, None{})` (the
 last `Size{width, height}` of a batch), `signed(word)` (two's complement word
@@ -70,6 +74,33 @@ Shift+Tab (ISO_Left_Tab) 25, any other key 65536 + its X keycode.
 
 `mods` bits: `shift()` 1, `control()` 2, `alt()` 4, `super()` 8,
 `caps_lock()` 16.
+
+`unicode(keysym)` is a keysym's character for text without an input method:
+Latin-1 keysyms are themselves, `0x01000000 + c` is `c`, anything else 0.
+
+### Text input
+
+`open` gives the window an input context on Xlib's built-in input method:
+dead keys, compose sequences (`~/.XCompose` included) and AltGr levels work
+with any XKB layout; there is no IME server yet (no preedit, no candidate
+window). When no input method can be opened, text arrives from keysyms
+(no dead keys). See [the bridge](bridge.md#text).
+
+## Clipboard (`clipboard.bend`)
+
+The CLIPBOARD selection, text only. The app keeps a `Clip{owned, text}`.
+
+| Function | Contract |
+| --- | --- |
+| `none()` | A `Clip` that owns nothing. |
+| `copy(win, text)` | `IO(Clip)`: takes the clipboard with `time(win)` and offers `text`; `owned` says whether the server gave ownership. |
+| `paste(win, clip)` | `IO(Maybe<&2, String>)`: `Some{text}` at once when `clip` is owned; otherwise `None{}` now, and the owner's answer arrives in a later batch as `Clipboard{Pasted{text}}` or `Clipboard{PasteFailed{code}}`. Texts over `paste_limit()` (4096 scalars) fail. |
+| `serve(win, clip, events)` | `IO(Clip)`: answers every `Clipboard{Asked}` in the batch and clears `owned` on `Clipboard{Lost}`. Call it with every batch. |
+| `answer(clip, request)` | Pure policy, an `Answer`: `Refuse{}` when not owned or for an unknown target; `Targets{latin1}` for TARGETS (STRING listed only when every scalar is Latin-1); `Utf8{text}` for UTF8_STRING; `Latin1{text}` for STRING when it fits, else `Refuse{}`; TEXT as `Latin1` when it fits, else `Utf8`. |
+
+Transfers are whole properties: no INCR, so a copy larger than the server's
+maximum request size is refused, and PRIMARY (middle-click paste) is not
+supported.
 
 ## Application loop (`app.bend`)
 
