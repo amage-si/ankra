@@ -21,6 +21,33 @@ a roadmap item is not implemented merely because it appears in the project scope
   toolchain. Verify available syntax/effects instead of assuming old examples work.
 - Keep source, comments, documentation, and commit messages in English.
 
+## Writing fast Bend
+
+Correct Bend is not fast Bend by default. Measured rules (Bend 2.0.35):
+
+- Indexed, large or hot data (bytes, pixels, coverage, quads) lives in an
+  `Array<U32>` (native flat block, ~1 ns/read), not a `List`. Lists are fine
+  when tiny, built once and consumed in order. Arrays are affine and cannot be
+  fields of `Data` types: keep them local and convert once at the boundary.
+- No `do Result`/`do Maybe` binds or callbacks per byte, pixel or glyph: each
+  bind is a closure (45% of a measured profile). Thread state through one
+  recursive def that matches on the result.
+- `||`, `&&` and `Bool.pick` evaluate both sides; use `match` to stop early.
+- Never `Array.clone` or append (`List.append`) in a loop; build with a
+  reversed accumulator or a tail parameter.
+- A parameter that a def only matches or passes to itself is borrowed (no
+  refcount); descend trees with the selector as a parameter.
+- Keep non-recursive records small (they are passed flattened; the widest one
+  widens every call frame). Box big ones with an `Alias{x: T}` constructor.
+- Split independent, balanced work of tens of µs or more with a parallel call
+  (`a b = f(l) g(r)`); never parallelize tiny or IO-bound work.
+- Measure before and after on the same input; print a result before the next
+  `IO.now()`.
+
+Here: Ankra's work is per event and waits on X, so lists of events and held
+keys are fine and parallel calls do not pay. Keep event decoding one fold with
+a reversed accumulator.
+
 ## Linux first
 
 The initial goal is excellent behavior on Ian's actual Linux development machine:
