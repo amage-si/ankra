@@ -30,12 +30,15 @@ in [native.bend](../native.bend).
   Bend 2.0.36 form): the loop runs it at once, and an effect that waits
   parks itself with `io_wait_on`, as `x11_wait` does.
 - **Linking.** Including `<X11/Xlib.h>` makes `bend` link libX11, the same
-  rule the official Window effect relies on; XKB is part of libX11.
+  rule the official Window effect relies on; XKB is part of libX11. RandR
+  (`x11_monitors`) is opened with `dlopen("libXrandr.so.2")` on first use,
+  so nothing else is linked; `<X11/extensions/Xrandr.h>` only supplies its
+  types. Without the library or the extension, the answer is empty.
 - **Failures** answer `Fail{(code, text)}`: 22 (EINVAL) for a bad slot or
   argument, 24 (EMFILE) when the slot table is full, 95 (ENOTSUP) when no
   display is reachable; `x11_clip_take` adds the codes in its row.
 
-Size: 1006 lines, 19 effects, each
+Size: 1095 lines, 20 effects, each
 with its `#ifdef` guard and registration.
 
 ## Effects
@@ -54,6 +57,7 @@ All answer `IO(Result<&1, &1, U32 & String, T>)`.
 | `x11_map(window)` | `XMapWindow` + `XFlush` | → Unit |
 | `x11_position(window)` | `XTranslateCoordinates` to the root | → `[x, y]` (two's complement words) |
 | `x11_native(window, display)` | none (fields) | → `[1, Display* high, Display* low, window id, screen]` for `display` |
+| `x11_monitors(window)` | `XRRQueryExtension`, `XRRGetScreenResourcesCurrent` on the window's root, `XRRGetCrtcInfo` per CRTC (through `dlopen`) | → eight words per CRTC showing a mode: `x y width height` (root coordinates, two's complement) and the mode's `dotClock hTotal vTotal modeFlags`. Empty without RandR. The refresh, and which CRTC the window is on, are decided in Bend (`window.bend`, `refresh_of`). |
 | `x11_wait(display, ms)` | `XPending`/`XNextEvent` (+ `XFilterEvent` with an input method); parks with `io_wait_on` | 0 polls, 4294967295 no deadline. → event words (below) |
 | `x11_watch(display, fd)` | `epoll_create1` + `epoll_ctl` (once), `epoll_ctl` per call | Waits on `display` also end when `fd` is readable; 0xFFFFFFFF stops watching. The epoll set is closed with the display. → Unit |
 | `x11_input(window)` | `setlocale(LC_CTYPE)` + `XSetLocaleModifiers("@im=none")` + `XOpenIM` (once per display), `XCreateIC` + `XSetICFocus` | → 1 with an input context, 0 without (text then crosses as keysyms). See [Text](#text). |

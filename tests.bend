@@ -47,7 +47,7 @@ def batch_order(batch: A.Batch) -> Bool:
 
 # A 640x400 window in slot 2 of display 1, focused and mapped at (10, 20).
 def win() -> W.Win:
-  W.Win{1, 5, 2, 640, 400, 10.0, 20.0, True{}, True{}, Nil{}, True{}, 0}
+  W.Win{1, 5, 2, 640, 400, 10.0, 20.0, True{}, True{}, Nil{}, True{}, 0, 0, 0}
 
 def ev(+k: U32, +a: U32, +b: U32, +c: U32, +d: U32, +e: U32, +f: U32) -> List<&2, U32>:
   [k, 2, a, b, c, d, e, f]
@@ -148,7 +148,7 @@ def is_shown(es: List<&2, W.Input>, +v: Bool) -> Bool:
     case _: False{}
 
 def no_keys(w: W.Win) -> Bool:
-  W.Win{d, pr, n, wd, h, x, y, f, v, k, r, tm} = w
+  W.Win{d, pr, n, wd, h, x, y, f, v, k, r, tm, fr, hz} = w
   U32.is_eq(U32.from_nat(List.length(&2, U32, k)), 0)
 
 # keysym, keycode, down, state, chars (count << 8 | byte), time
@@ -218,10 +218,28 @@ def finished(t: Loop.Turn<U32>, +want: U32) -> Bool:
     case Loop.Finish{w, s}: U32.is_eq(s, want)
     case _: False{}
 
-def continued(t: Loop.Turn<U32>, +want: U32, +dirty: Bool, +ms: U32) -> Bool:
+# A Continue with this state and staleness whose wait, at `now`, is `ms`.
+def continued(t: Loop.Turn<U32>, +want: U32, +dirty: Bool, +ms: U32, +now: Nat) -> Bool:
   match t:
-    case Loop.Continue{w, s, d, m}: U32.is_eq(s, want) && Bool.not(Bool.xor(d, dirty)) && U32.is_eq(m, ms)
+    case Loop.Continue{w, +s, +d, c}: U32.is_eq(s, want) && Bool.not(Bool.xor(d, dirty)) && U32.is_eq(Loop.wait_ms(d, c, now), ms)
     case _: False{}
+
+def animating(t: Loop.Turn<U32>) -> Bool:
+  match t:
+    case Loop.Continue{w, s, d, Loop.Clock{a, due, timer}}: a
+    case _: False{}
+
+# A moment of the monotonic clock in microseconds, and frames of 8333 us.
+def at() -> Nat:
+  1000000000n
+
+def anim(+due: Nat) -> Loop.Clock:
+  Loop.Clock{True{}, due, 0n}
+
+# Two monitors as RandR answers them: 1920x1080 at 119.93 Hz at the
+# origin, and 1920x1080 at 60 Hz to its right.
+def screens() -> List<&2, U32>:
+  [0, 0, 1920, 1080, 369500000, 2656, 1160, 0, 1920, 0, 1920, 1080, 148500000, 2200, 1125, 0]
 
 def main() -> IO(Unit):
   do IO<Unit>:
@@ -269,11 +287,49 @@ def main() -> IO(Unit):
     check(W.watched(cat([ev(6, 1, 2, 0, 0, 0, 0), [14, 0, 0, 0, 0, 0, 0, 0]])) && is_pointer(events(cat([ev(6, 1, 2, 0, 0, 0, 0), [14, 0, 0, 0, 0, 0, 0, 0]])), 1.0, 2.0) &&
       Bool.not(W.watched(ev(6, 14, 14, 0, 0, 0, 0))), "watch: the watched descriptor's record ends a wait and decodes to nothing")
     check(F32.is_eq(W.signed(4294967295), F32.neg(1.0)), "signed coordinates")
-    check(finished(Loop.next(U32, True{}, win(), Loop.Keep{7}, False{}), 7), "loop: a close request finishes after update")
-    check(continued(Loop.next(U32, False{}, win(), Loop.Keep{7}, True{}), 7, True{}, W.forever()), "loop: Keep waits without deadline, an owed frame stays owed")
-    check(continued(Loop.next(U32, False{}, win(), Loop.Redraw{8}, False{}), 8, True{}, W.forever()), "loop: Redraw marks the content stale")
-    check(continued(Loop.next(U32, False{}, win(), Loop.Sleep{9, 50}, False{}), 9, False{}, 50), "loop: Sleep sets the next deadline")
-    check(finished(Loop.next(U32, False{}, win(), Loop.Stop{3}, False{}), 3), "loop: Stop hands the final state back")
+    check(finished(Loop.updated(U32, True{}, win(), Loop.Keep{7}, False{}, Loop.idle(), at()), 7), "loop: a close request finishes after update")
+    check(continued(Loop.updated(U32, False{}, win(), Loop.Keep{7}, True{}, Loop.idle(), at()), 7, True{}, 0, at()) &&
+      continued(Loop.updated(U32, False{}, win(), Loop.Keep{7}, False{}, Loop.idle(), at()), 7, False{}, W.forever(), at()),
+      "loop: Keep waits without deadline, an owed frame stays owed")
+    check(continued(Loop.updated(U32, False{}, win(), Loop.Redraw{8}, False{}, Loop.idle(), at()), 8, True{}, 0, at()), "loop: Redraw marks the content stale")
+    check(continued(Loop.updated(U32, False{}, win(), Loop.Sleep{9, 50}, False{}, Loop.idle(), at()), 9, False{}, 50, at()), "loop: Sleep sets the next deadline")
+    check(finished(Loop.updated(U32, False{}, win(), Loop.Stop{3}, False{}, Loop.idle(), at()), 3), "loop: Stop hands the final state back")
+    check(continued(Loop.updated(U32, False{}, win(), Loop.animate(U32, 4), False{}, Loop.idle(), at()), 4, True{}, 0, at()) &&
+      animating(Loop.updated(U32, False{}, win(), Loop.animate(U32, 4), False{}, Loop.idle(), at())) &&
+      Loop.paints(True{}, anim(at()), at()) && Nat.is_eq(Loop.frame_at(anim(at()), at(), 8333n), at()),
+      "loop: animate from update draws at once, at the frame time now")
+    check(continued(Loop.drew(U32, win(), Loop.animate(U32, 5), anim(at()), at(), 8333n, Nat.add(at(), 2000n)), 5, True{}, 5, Nat.add(at(), 2000n)) &&
+      animating(Loop.drew(U32, win(), Loop.animate(U32, 5), anim(at()), at(), 8333n, Nat.add(at(), 2000n))),
+      "loop: animating, the next deadline is one period after the frame, less the lead")
+    check(continued(Loop.drew(U32, win(), Loop.Keep{6}, anim(at()), at(), 8333n, Nat.add(at(), 2000n)), 6, False{}, W.forever(), Nat.add(at(), 2000n)) &&
+      Bool.not(animating(Loop.drew(U32, win(), Loop.Keep{6}, anim(at()), at(), 8333n, Nat.add(at(), 2000n)))),
+      "loop: a draw that stops animating waits with no deadline")
+    check(Bool.not(Loop.paints(True{}, anim(at()), Nat.sub(at(), 3100n))) && Loop.paints(True{}, anim(at()), Nat.sub(at(), 2900n)) &&
+      Nat.is_eq(Loop.frame_at(anim(at()), Nat.sub(at(), 2900n), 8333n), at()) && Bool.not(Loop.paints(False{}, anim(at()), at())),
+      "loop: an animated frame is drawn from 3 ms before its grid time, stamped with it")
+    check(Nat.is_eq(Loop.frame_at(anim(at()), Nat.add(at(), 20000n), 8333n), Nat.add(at(), 16666n)) &&
+      Nat.is_eq(Loop.frame_at(Loop.idle(), Nat.add(at(), 20000n), 8333n), Nat.add(at(), 20000n)),
+      "loop: a late frame skips to the latest grid time; outside animation the frame time is now")
+    check(continued(Loop.updated(U32, False{}, win(), Loop.Keep{1}, True{}, anim(at()), Nat.sub(at(), 3000n)), 1, True{}, 2, Nat.sub(at(), 3000n)) &&
+      continued(Loop.updated(U32, False{}, win(), Loop.Redraw{1}, True{}, anim(at()), Nat.sub(at(), 3000n)), 1, True{}, 2, Nat.sub(at(), 3000n)) &&
+      animating(Loop.updated(U32, False{}, win(), Loop.Keep{1}, True{}, anim(at()), Nat.sub(at(), 3000n))),
+      "loop: update's Keep and Redraw leave an animation alone; a Redraw waits for the frame")
+    check(continued(Loop.updated(U32, False{}, win(), Loop.Sleep{1, 1}, True{}, anim(at()), Nat.sub(at(), 3000n)), 1, True{}, 1, Nat.sub(at(), 3000n)),
+      "loop: a Sleep shorter than the next frame wakes first")
+    check(U32.is_eq(W.frame_time(Loop.stamp(win(), Nat.add(at(), 8333n))), 1000008) && U32.is_eq(W.frame_time(win()), 0) &&
+      U32.is_eq(W.frame_time(Loop.stamp(win(), Nat.mul(Nat.mul(65536n, 65536n), 1000n))), 0), "loop: the frame time reaches the window in ms, wrapping at 2^32")
+    check(Nat.is_eq(Loop.period(119930), 8338n) && Nat.is_eq(Loop.period(0), 16666n) && Nat.is_eq(Loop.period(5), 50000n),
+      "loop: the period follows the refresh; 60 Hz when unknown, clamped")
+    check(U32.is_eq(W.mode_mhz(369500000, 2656, 1160, 0), 119930) && U32.is_eq(W.mode_mhz(148500000, 2200, 1125, 16), 120000) &&
+      U32.is_eq(W.mode_mhz(148500000, 2200, 1125, 32), 30000) && U32.is_eq(W.mode_mhz(1, 0, 0, 0), 0),
+      "refresh: dotClock / (hTotal x vTotal), interlace and doublescan")
+    check(U32.is_eq(W.refresh_of(screens(), 100.0, 100.0, 640, 400, 0), 119930) && U32.is_eq(W.refresh_of(screens(), 2000.0, 100.0, 640, 400, 0), 60000) &&
+      U32.is_eq(W.refresh_of(screens(), 1700.0, 100.0, 640, 400, 0), 60000) && U32.is_eq(W.refresh_of(screens(), 1500.0, 100.0, 640, 400, 0), 119930),
+      "refresh: the monitor the window overlaps most")
+    check(U32.is_eq(W.refresh_of(screens(), F32.neg(5000.0), 0.0, 640, 400, 75000), 75000) && U32.is_eq(W.refresh_of([], 0.0, 0.0, 640, 400, 75000), 75000),
+      "refresh: off every monitor, or without RandR, the window keeps its rate")
+    check(W.relocated([W.Moved{1.0, 2.0}]) && W.relocated([W.Shown{True{}}]) && Bool.not(W.relocated([W.Shown{False{}}, W.Focused{True{}}])),
+      "refresh: moves and maps ask RandR again")
     check(same(traced(cat([key(97, 38, 1, 0, 353, 5), txt(1, 97, 0, 0, 0, 0)])), [97, 0, 2000, 97]), "text: KeyDown, then TextTyped a")
     check(same(traced(cat([key(0, 0, 1, 0, 0, 5), txt(1, 227, 0, 0, 0, 0)])), [2000, 227]), "text: an input method's result (keycode 0) is text without a KeyDown")
     check(same(traced(cat([key(97, 38, 1, 0, 353, 5), txt(260, 111, 108, 225, 32, 0), txt(1, 120, 0, 0, 0, 0)])), [97, 0, 2000, 111, 108, 225, 32, 120]),
@@ -309,4 +365,4 @@ def main() -> IO(Unit):
       is_latin1(C.answer(C.Clip{True{}, "ã"}, request(4)), "ã"), "clipboard answer: € refused as STRING; TEXT falls back to UTF-8")
     check(is_refused(C.answer(C.Clip{True{}, "a"}, request(0))) && is_refused(C.answer(C.Clip{False{}, "a"}, request(2))) &&
       is_refused(C.answer(C.none(), request(1))), "clipboard answer: unknown target, or a clipboard not owned, is refused")
-    IO.print("62 Ankra checks passed")
+    IO.print("75 Ankra checks passed")

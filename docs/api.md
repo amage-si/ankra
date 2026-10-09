@@ -28,12 +28,40 @@ import ./Ankra/main.bend as Official # the official-runtime backend
 ### State
 
 `Win{display, presenter, window, width, height, x, y, focused, visible, held,
-detectable, time}` is `Data`: native slots and what Ankra knows about the
-window. `wait` returns the next value; use the accessors `width`, `height`,
-`position_x`, `position_y`, `focused`, `visible`, `detectable` (whether the
-server suppresses autorepeat releases) and `time` (the X server time of the
-last key or button event, 0 before any; clipboard requests carry it). The window starts unmapped, unfocused,
-at (0, 0), at the requested size; events bring the real values.
+detectable, time, frame, refresh}` is `Data`: native slots and what Ankra
+knows about the window. `wait` returns the next value; use the accessors
+`width`, `height`, `position_x`, `position_y`, `focused`, `visible`,
+`detectable` (whether the server suppresses autorepeat releases), `time`
+(the X server time of the last key or button event, 0 before any; clipboard
+requests carry it), `frame_time` and `refresh` (below). The window starts
+unmapped, unfocused, at (0, 0), at the requested size; events bring the real
+values.
+
+| Accessor | Meaning |
+| --- | --- |
+| `frame_time(win)` | `U32` ms of the monotonic clock `IO.now` reads (truncated to 32 bits: it wraps after 49.7 days, so compare times by their difference): when the frame being prepared is meant to be shown. The loop sets it before every `update` and `draw` (see [Animation](#animation)); 0 before the loop runs. |
+| `refresh(win)` | `U32` millihertz: the refresh rate of the monitor the window is on (119930 for 119.93 Hz), 0 when unknown (no RandR). |
+
+### Monitors and refresh
+
+`monitors(win)` (`IO(Win)`) asks RandR for the screen's active CRTCs
+(`x11_monitors`) and records the refresh of the one the window is on. `open`
+calls it, and `wait` calls it again after a batch with `Moved` or
+`Shown{True}`, so the rate follows the window to another monitor. The policy
+is pure and in Bend:
+
+- `mode_mhz(dotClock, hTotal, vTotal, flags)`: dotClock / (hTotal x vTotal),
+  doubled for an interlaced mode (flag 0x10), halved for a doublescan one
+  (0x20), in mHz.
+- `refresh_of(words, x, y, width, height, old)`: the rate of the CRTC the
+  window rectangle overlaps most (the first one on a tie); `old` when it
+  overlaps none or RandR answered nothing.
+
+Under XWayland, RandR describes each Wayland output with a generated mode:
+this machine's 120.002 Hz panel reads as 119.93 Hz, and outputs sit in X's
+own coordinates (the same ones as `Moved`). Not handled yet: a mode change
+on a monitor while the window stays put (no RandR event is selected), and
+per-output scale.
 
 ### Events
 
@@ -118,15 +146,78 @@ Loop.run(~S, ~update, ~draw, win, state) -> IO(A.Win & S)
 #   draw:   A.Win -> S -> IO(Loop.Step<S>)
 ```
 
-`Step<S>`: `Keep{state}`, `Redraw{state}`, `Sleep{state, ms}`, `Stop{state}`.
+`Step<S>`: `Keep{state}`, `Redraw{state}`, `Sleep{state, ms}`, `Stop{state}`,
+and `animate(S, state)` (which is `Sleep{state, frame()}`, `frame()` =
+4294967294).
 
 Each turn: if the content is stale, `draw` runs (its `Redraw` means another
 frame is owed, e.g. a rebuilt swapchain); then `wait` runs with no wait at all
-while a frame is owed, the `Sleep` deadline if one was asked, or without a
-deadline; then `update` gets the window and the batch. `Redraw` from `update`
-marks the content stale. A batch containing `CloseRequested` ends the loop
-after `update`; so does `Stop`. The first turn draws. The loop is bounded by
-4294967295 turns because Bend requires termination.
+while a frame is owed, the `Sleep` deadline if one was asked, until the next
+frame while animating, or without a deadline; then `update` gets the window
+and the batch. `Redraw` from `update` marks the content stale. A batch
+containing `CloseRequested` ends the loop after `update`; so does `Stop`. The
+first turn draws. The loop is bounded by 4294967295 turns because Bend
+requires termination.
+
+### Animation
+
+```bend
+def update(win: A.Win, es: List<&2, A.Input>, s: S) -> IO(Loop.Step<S>):
+  ...  # start a motion at A.frame_time(win); answer Loop.animate(S, s')
+
+def draw(win: A.Win, s: S) -> IO(Loop.Step<S>):
+  ...  # evaluate every motion at A.frame_time(win) and draw;
+       # Loop.animate(S, s') while something still moves, Keep{s'} once all rest
+```
+
+| Answer | From `update` | From `draw` |
+| --- | --- | --- |
+| `animate(S, s)` | Starts animating: the next frame is drawn at once (at once also when idle), stamped with the current time. Already animating: nothing changes. | Draw the next frame one refresh period after this one. |
+| `Keep{s}` | Leaves a running animation alone. | Ends the animation: the loop waits with no deadline (0 frames, 0 wakeups). |
+| `Redraw{s}` | Content stale. While animating, it is drawn with the next frame, not at once (it would land in the same refresh). | Ends the animation; one more frame at once. |
+| `Sleep{s, ms}` | A deadline, as before; while animating the loop wakes at whichever comes first. | Ends the animation; wakes within `ms`. |
+
+Frames follow a grid of the monitor's refresh period (`refresh(win)`, 60 Hz
+when unknown): the loop sleeps in the event wait until 1 ms before the next
+grid time, draws as soon as it wakes within 3 ms of it, and stamps the frame
+with the grid time itself. Animated frames are therefore exactly one period
+apart in `frame_time` whatever the moment the loop woke; motion evaluated
+there advances evenly. A loop a period or more late skips to the latest grid
+time instead of drawing the missed ones. Outside animation, the frame time is
+the moment the turn began. While animating, `update` also runs once per
+frame with the events since the last (often none). Events still end the wait
+at once, so input is read between frames.
+
+The pure decisions are exported and tested without a display: `updated`
+(after `update`), `drew` (after `draw`), `paints` (does this turn draw),
+`wait_ms` (how long the next wait is), `frame_at` and `slot` (the frame
+time), `period` (µs per frame for a refresh in mHz), `stamp`.
+
+**Why a timed grid rather than drawing back to back.** Voltra presents with
+FIFO, but under XWayland FIFO does not hold an app to the refresh rate.
+Measured with `Voltra/examples/motion.bend` (one rounded rect sliding 520 px
+in 2 s, 720x400 window on the 120 Hz eDP-1 panel, visible workspace without
+focus, timestamps from eco-bench's present-log layer, three runs each):
+
+| | Grid (`animate`) | Back to back (`Redraw` every frame) |
+| --- | --- | --- |
+| Frames presented for the 2 s slide | 241, 241, 241 (120.5/s) | 436, 415, 358 (180-218/s) |
+| Present interval p50 / p99, ms | 8.43-8.47 / 9.55-9.62 | 4.9-6.7 / 8.8-11.2 (p1 0.23-0.32) |
+| Intervals of 1.5 periods or more | 0, 0, 0 | 1, 2, 1 |
+| Frame time vs. present, deviation p99 | 0.54-0.63 ms | 5.0-6.6 ms (max 14 ms) |
+| Time blocked in vkAcquireNextImageKHR, p50 | 0.03 ms | 4.6-5.9 ms |
+| Main-thread CPU per frame | 0.40-0.46 ms | 0.33-0.52 ms |
+| Main-thread switches per frame | 1.1-1.2 | 1.1-1.5 |
+| After the slide, 5 s idle: frames / main-thread wakeups / main CPU | 0 / 0 / 0 ms | 0 / 0 / 0 ms |
+
+The same grid on HDMI-A-1 (the window moved there, the slide restarted with a
+synthetic Space): p50 8.44 ms, p99 9.56 ms, no interval over 9.7 ms.
+`VK_KHR_present_wait` is offered by this NVIDIA driver (610.57) for X11
+surfaces and was tried through a measuring layer: a present completes about
+0.03 ms after `vkQueuePresentKHR` returns (XWayland copies and completes at
+once), so it carries no vblank time. `VK_EXT_present_timing` on the X11
+surface reports only the queue-operations-end stage and no target times. Neither
+was adopted; the RandR period plus the timed grid is the pacing.
 
 `run` hands back the window and the final state: tear down what the app owns
 (GPU surfaces first), then `A.close(win)`.

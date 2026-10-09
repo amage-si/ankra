@@ -61,17 +61,36 @@ captured (`grim -T`).
 - `app.run`: draws when the content is stale, waits without a deadline when
   nothing is owed, or until the app's own deadline (`Sleep`), and returns the
   final window and state on a close request or `Stop`.
+- Animation: while the app answers `Loop.animate`, the loop draws one frame
+  per refresh of the window's monitor, on a timed grid, and hands every
+  `update` and `draw` the frame's time (`frame_time(win)`, ms), so motion
+  advances evenly; when the app stops animating it is back to 0 frames and
+  0 wakeups.
+- The monitor's refresh rate (`refresh(win)`, mHz) from RandR, asked again
+  when the window moves or is shown, so it follows the window to another
+  monitor.
 - `native(win)`: the Xlib `Display*` and window id for a GPU surface, on a
   dedicated presentation connection (see [the bridge](docs/bridge.md#why-two-connections)).
 
 How it was verified on the development machine:
 
-- **62 native checks** (`tests.bend`, no display needed): the official
+- **75 native checks** (`tests.bend`, no display needed): the official
   loop's batching and bounds, and the native backend's decoding of event
   words (configure, focus filtering, keys and repeats, text records and
   their policy, clipboard records, buttons, wheel, motion coalescing,
   expose, map, close), key codes and modifiers, the clipboard's answer
-  policy, and the loop's decisions.
+  policy, the loop's decisions (animating gives the next frame's deadline,
+  not animating none, frame times on the grid, late frames skipped), and the
+  refresh policy (mode rates, the monitor the window overlaps most).
+- **Animation** (Voltra's `examples/motion.bend`, a rect sliding for 2 s on
+  the 120 Hz panel, eco-bench's present-log layer, three runs): 241 frames
+  each, present intervals p50 8.43-8.47 ms and p99 9.55-9.62 ms, no interval
+  of 1.5 periods or more, 0.40-0.46 ms of main-thread CPU per frame; then
+  5 s with 0 frames, 0 main-thread wakeups and 0 main-thread CPU. Drawing
+  back to back instead presented 180-218 frames a second, some 0.25 ms
+  apart. Moved to the other monitor (HDMI-A-1), the window's refresh was
+  asked again and the slide paced the same. See
+  [the API reference](docs/api.md#animation).
 - **Real window** (`examples/native.bend`, events printed): a resize by the
   window manager arrived as `resized 640x400`, moves as `moved to 200,150`,
   focusing the window and focusing another one as `focus in`/`focus out`,
@@ -151,6 +170,7 @@ def main() -> IO(Unit):
 | `Keep{state}` | Nothing new to show; wait without a deadline. |
 | `Redraw{state}` | The content changed: `draw` runs before the next wait. |
 | `Sleep{state, ms}` | Nothing new to show, but wake within `ms` (timers, another event source). |
+| `Loop.animate(S, state)` | The content moves with time: draw every refresh until a `draw` answers otherwise; read the frame's time with `A.frame_time(win)`. |
 | `Stop{state}` | End the loop. |
 
 A batch with `CloseRequested` ends the loop after `update` has seen it. `run`
@@ -160,12 +180,13 @@ window, then `A.close(win)`. Read the [API reference](docs/api.md) and the
 
 ## The native bridge
 
-`native/ankra.c` (920 lines, 675 non-blank and non-comment) with its
-JS twin (`native/ankra.js`, which answers ENOTSUP) exposes **18 effects**:
+`native/ankra.c` (1,095 lines, 812 non-blank and non-comment) with its
+JS twin (`native/ankra.js`, which answers ENOTSUP) exposes **20 effects**:
 one Xlib call each (or one protocol step), or a field-by-field translation
 of an Xlib event into words: `x11_connect`, `x11_create`, `x11_protocols`,
 `x11_title`, `x11_class`, `x11_size_hints`, `x11_autorepeat`, `x11_map`,
-`x11_position`, `x11_native`, `x11_wait`, `x11_input`, `x11_clip_own`,
+`x11_position`, `x11_native`, `x11_monitors`, `x11_wait`, `x11_watch`,
+`x11_input`, `x11_clip_own`,
 `x11_clip_reply`, `x11_clip_ask`, `x11_clip_take`, `x11_destroy`,
 `x11_live`. Which events to select, which focus changes count, how keys map
 to codes, which characters are text, what a clipboard request gets, when to
@@ -176,7 +197,12 @@ ask for the position, and how long to wait are decided in Bend.
 - The native window has no CPU presenter: pair it with a GPU renderer
   (Voltra), or use the official backend for CPU images.
 - X11/XWayland only. Native Wayland, other platforms, multiple windows per
-  display connection and monitor/scale discovery are not implemented.
+  display connection and scale discovery are not implemented. The refresh
+  rate comes from RandR, which XWayland approximates (119.93 Hz for this
+  120.002 Hz panel); a monitor's mode change while the window stays put is
+  not noticed until it moves. Frames are timed by the loop's own clock in
+  whole milliseconds; no present feedback with vblank times is available
+  on XWayland (present_wait completes at once there).
 - Text input uses Xlib's local input method only: no IME server (fcitx,
   ibus), so no preedit and no candidate window for CJK input yet. Without
   an input method (an unsupported locale), text comes from keysyms and dead
@@ -211,7 +237,8 @@ ask for the position, and how long to wait are decided in Bend.
 ## Direction
 
 Next: one wait over several event sources, IME (fcitx through XIM, with
-preedit), scale discovery, and native Wayland. Each capability needs a working Linux example and measured
+preedit), scale discovery, and native Wayland (with presentation feedback
+for frame timing). Each capability needs a working Linux example and measured
 behavior before broader platform support. These are goals, not supported
 features.
 

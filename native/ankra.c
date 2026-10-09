@@ -17,11 +17,14 @@
 //
 // Including <X11/Xlib.h> makes `bend` link libX11, the same rule the
 // official Window effect relies on. XKB functions live in libX11 as well.
+// RandR (x11_monitors) is reached through dlopen, so no other library is
+// linked; its header only supplies the types.
 //
 // Failures answer `Fail{(code, text)}`: 22 (EINVAL) for a bad slot or
 // argument, 24 (EMFILE) when the slot table is full, 95 (ENOTSUP) when no
 // X display is reachable.
 
+#include <dlfcn.h>
 #include <locale.h>
 #include <poll.h>
 #include <sys/epoll.h>
@@ -30,6 +33,7 @@
 #include <X11/Xatom.h>
 #include <X11/Xutil.h>
 #include <X11/XKBlib.h>
+#include <X11/extensions/Xrandr.h>
 
 // Slots
 // -----
@@ -403,6 +407,91 @@ Term ak_x11_native_run(Env e, Term* f, IoWork* w) {
 
 static void __attribute__((constructor)) ak_x11_native_use(void) {
   io_eff(CID(x11_native), ak_x11_native_run);
+}
+
+#endif
+
+#ifdef CID(x11_monitors)
+
+// RandR's current configuration of the window's screen
+// (XRRGetScreenResourcesCurrent, then XRRGetCrtcInfo per CRTC): eight
+// words per CRTC that shows a mode, x y width height (root coordinates,
+// two's complement) and the mode's dotClock (Hz) hTotal vTotal modeFlags.
+// The refresh rate, and which CRTC the window is on, are decided in Bend.
+// libXrandr is opened with dlopen on first use (bend links libX11 only);
+// without it, or without RandR on the server, the answer is empty.
+typedef XRRScreenResources* (*AkGetResources)(Display*, Window);
+typedef XRRCrtcInfo* (*AkGetCrtc)(Display*, XRRScreenResources*, RRCrtc);
+typedef void (*AkFreeResources)(XRRScreenResources*);
+typedef void (*AkFreeCrtc)(XRRCrtcInfo*);
+typedef Bool (*AkQuery)(Display*, int*, int*);
+
+static struct {
+  int             tried;
+  AkQuery         query;
+  AkGetResources  resources;
+  AkGetCrtc       crtc;
+  AkFreeResources free_resources;
+  AkFreeCrtc      free_crtc;
+} ak_rr;
+
+static int ak_rr_load(void) {
+  if (!ak_rr.tried) {
+    ak_rr.tried = 1;
+    void* lib = dlopen("libXrandr.so.2", RTLD_NOW | RTLD_LOCAL);
+    if (lib != NULL) {
+      ak_rr.query = (AkQuery)dlsym(lib, "XRRQueryExtension");
+      ak_rr.resources = (AkGetResources)dlsym(lib, "XRRGetScreenResourcesCurrent");
+      ak_rr.crtc = (AkGetCrtc)dlsym(lib, "XRRGetCrtcInfo");
+      ak_rr.free_resources = (AkFreeResources)dlsym(lib, "XRRFreeScreenResources");
+      ak_rr.free_crtc = (AkFreeCrtc)dlsym(lib, "XRRFreeCrtcInfo");
+    }
+  }
+  return ak_rr.query && ak_rr.resources && ak_rr.crtc && ak_rr.free_resources
+    && ak_rr.free_crtc;
+}
+
+Term ak_x11_monitors_run(Env e, Term* f, IoWork* w) {
+  AkSlot* s = ak_get((u32)f[0], AK_WINDOW);
+  if (s == NULL) {
+    return AK_BAD(e, "window");
+  }
+  int ev = 0, er = 0;
+  if (!ak_rr_load() || !ak_rr.query(s->dpy, &ev, &er)) {
+    return io_done(e, ak_list(e, NULL, 0));
+  }
+  XRRScreenResources* res = ak_rr.resources(s->dpy, DefaultRootWindow(s->dpy));
+  if (res == NULL) {
+    return io_done(e, ak_list(e, NULL, 0));
+  }
+  u32* out = io_mem(calloc((size_t)res->ncrtc * 8 + 1, sizeof(u32)));
+  u32  n   = 0;
+  for (int i = 0; i < res->ncrtc; i++) {
+    XRRCrtcInfo* c = ak_rr.crtc(s->dpy, res, res->crtcs[i]);
+    if (c == NULL) {
+      continue;
+    }
+    for (int m = 0; c->mode != None && m < res->nmode; m++) {
+      XRRModeInfo* mi = &res->modes[m];
+      if (mi->id == c->mode) {
+        u32 rec[8] = { (u32)(int32_t)c->x, (u32)(int32_t)c->y, c->width,
+          c->height, (u32)mi->dotClock, mi->hTotal, mi->vTotal,
+          (u32)mi->modeFlags };
+        memcpy(out + n, rec, sizeof rec);
+        n += 8;
+        break;
+      }
+    }
+    ak_rr.free_crtc(c);
+  }
+  ak_rr.free_resources(res);
+  Term t = ak_list(e, out, n);
+  free(out);
+  return io_done(e, t);
+}
+
+static void __attribute__((constructor)) ak_x11_monitors_use(void) {
+  io_eff(CID(x11_monitors), ak_x11_monitors_run);
 }
 
 #endif

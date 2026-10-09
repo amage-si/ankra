@@ -7,6 +7,37 @@ patch version (0.1.1) only fixes. Ankra is built from source together with its
 sibling AMAGE libraries; the set of versions tested together is listed in
 [eco-build's releases](https://github.com/amage-si/eco-build/tree/main/releases).
 
+## [Unreleased]
+
+### Added
+
+- Animation in the loop: `Loop.animate(S, state)` (a `Sleep` with the
+  value `Loop.frame()`) from `update` starts drawing once per refresh of the
+  window's monitor; from `draw` it asks for the next frame; any other answer
+  from `draw` ends it, back to 0 frames and 0 wakeups. Frames follow a timed
+  grid of the refresh period: the loop sleeps in the event wait until just
+  before each frame, so input is still read between frames.
+- `frame_time(win)`: the time, in U32 ms of `IO.now`'s clock, the frame
+  being prepared is meant for, set before every `update` and `draw`; animated
+  frames are exactly one period apart, and a late loop skips to the latest
+  grid time.
+- `refresh(win)`: the refresh rate (mHz) of the monitor the window is on,
+  from RandR, asked again after `Moved` and `Shown{True}`; `monitors(win)`
+  and the pure policy `mode_mhz` / `refresh_of`.
+- Bridge effect `x11_monitors` (RandR's CRTCs and their modes, libXrandr
+  through `dlopen`); 20 effects.
+- 13 more native checks (75): the loop's animation decisions, frame times,
+  periods and the refresh policy.
+
+### Changed
+
+- `Win` has two more fields, `frame` and `refresh` (code that builds or
+  destructures `Win` directly needs them; the accessors are unchanged).
+- The loop's internal turn now carries a `Clock` (animation, next frame, the
+  app's Sleep deadline as an absolute time) instead of a relative timeout;
+  `Loop.next` became `Loop.updated` and `Loop.drew`. `Sleep` answers behave
+  as before.
+
 ## [0.1.1] - 2026-10-09
 
 ### Changed

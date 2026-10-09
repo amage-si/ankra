@@ -45,7 +45,8 @@ def background_word(+rgba: U32) -> U32:
 # layers for their surface (see `native`).
 type Win is Data:
   Win{display: U32, presenter: U32, window: U32, width: U32, height: U32, x: F32, y: F32,
-    focused: Bool, visible: Bool, held: List<&2, U32>, detectable: Bool, time: U32}
+    focused: Bool, visible: Bool, held: List<&2, U32>, detectable: Bool, time: U32,
+    frame: U32, refresh: U32}
 
 # A request for the clipboard's content (ICCCM SelectionRequest).
 # `target` is what is asked: 1 TARGETS, 2 UTF8_STRING, 3 STRING, 4 TEXT,
@@ -84,48 +85,73 @@ type Input is Data:
 # ---------
 
 def width(w: Win) -> U32:
-  Win{d, pr, n, width, h, x, y, f, v, k, r, tm} = w
+  Win{d, pr, n, width, h, x, y, f, v, k, r, tm, fr, hz} = w
   width
 
 def height(w: Win) -> U32:
-  Win{d, pr, n, wd, height, x, y, f, v, k, r, tm} = w
+  Win{d, pr, n, wd, height, x, y, f, v, k, r, tm, fr, hz} = w
   height
 
 def focused(w: Win) -> Bool:
-  Win{d, pr, n, wd, h, x, y, focused, v, k, r, tm} = w
+  Win{d, pr, n, wd, h, x, y, focused, v, k, r, tm, fr, hz} = w
   focused
 
 def position_x(w: Win) -> F32:
-  Win{d, pr, n, wd, h, x, y, f, v, k, r, tm} = w
+  Win{d, pr, n, wd, h, x, y, f, v, k, r, tm, fr, hz} = w
   x
 
 def position_y(w: Win) -> F32:
-  Win{d, pr, n, wd, h, x, y, f, v, k, r, tm} = w
+  Win{d, pr, n, wd, h, x, y, f, v, k, r, tm, fr, hz} = w
   y
 
 def visible(w: Win) -> Bool:
-  Win{d, pr, n, wd, h, x, y, f, visible, k, r, tm} = w
+  Win{d, pr, n, wd, h, x, y, f, visible, k, r, tm, fr, hz} = w
   visible
 
 # Whether the server suppresses autorepeat's synthetic releases
 # (XkbSetDetectableAutoRepeat). Repeats are flagged either way.
 def detectable(w: Win) -> Bool:
-  Win{d, pr, n, wd, h, x, y, f, v, k, detectable, tm} = w
+  Win{d, pr, n, wd, h, x, y, f, v, k, detectable, tm, fr, hz} = w
   detectable
 
 # The X server time of the last key or button event (0 before any): the
 # timestamp clipboard requests carry.
 def time(w: Win) -> U32:
-  Win{d, pr, n, wd, h, x, y, f, v, k, r, tm} = w
+  Win{d, pr, n, wd, h, x, y, f, v, k, r, tm, fr, hz} = w
   tm
 
 def display(w: Win) -> U32:
-  Win{display, pr, n, wd, h, x, y, f, v, k, r, tm} = w
+  Win{display, pr, n, wd, h, x, y, f, v, k, r, tm, fr, hz} = w
   display
 
 def window(w: Win) -> U32:
-  Win{d, pr, window, wd, h, x, y, f, v, k, r, tm} = w
+  Win{d, pr, window, wd, h, x, y, f, v, k, r, tm, fr, hz} = w
   window
+
+# The frame time: when the frame being prepared is meant to be shown, in
+# milliseconds of the monotonic clock `IO.now` reads (truncated to U32, so
+# it wraps after 49.7 days; compare times by their difference). The loop
+# (app.bend) sets it before every `update` and `draw`: while animating it
+# steps by exactly one refresh period per frame, so motion evaluated at it
+# advances evenly whatever the moment the loop woke. 0 before the loop runs.
+def frame_time(w: Win) -> U32:
+  Win{d, pr, n, wd, h, x, y, f, v, k, r, tm, frame, hz} = w
+  frame
+
+# The refresh rate of the monitor the window is on, in millihertz
+# (119930 for 119.93 Hz), from RandR; 0 when unknown (no RandR). Updated
+# when the window moves or is shown (see `monitors`).
+def refresh(w: Win) -> U32:
+  Win{d, pr, n, wd, h, x, y, f, v, k, r, tm, fr, refresh} = w
+  refresh
+
+def with_frame(w: Win, +ms: U32) -> Win:
+  Win{d, pr, n, wd, h, x, y, f, v, k, r, tm, fr, hz} = w
+  Win{d, pr, n, wd, h, x, y, f, v, k, r, tm, ms, hz}
+
+def with_refresh(w: Win, +mhz: U32) -> Win:
+  Win{d, pr, n, wd, h, x, y, f, v, k, r, tm, fr, hz} = w
+  Win{d, pr, n, wd, h, x, y, f, v, k, r, tm, fr, mhz}
 
 def valid_size(+width: U32, +height: U32) -> Bool:
   (width > 0 : U32) && (height > 0 : U32) &&
@@ -255,9 +281,9 @@ def maybe_emit(go: Bool, d: Decode, ev: Input) -> Decode:
       keep(d)
 
 def configure.size(d: Decode, +w: U32, +h: U32) -> Decode:
-  Decode{Win{dp, pr, n, +ow, +oh, x, y, f, v, k, r, tm}, out, ask, rl, at, pa, tx} = d
+  Decode{Win{dp, pr, n, +ow, +oh, x, y, f, v, k, r, tm, fr, hz}, out, ask, rl, at, pa, tx} = d
   maybe_emit(U32.is_ne(ow, w) || U32.is_ne(oh, h),
-    Decode{Win{dp, pr, n, w, h, x, y, f, v, k, r, tm}, out, ask, rl, at, pa, tx}, Resized{w, h})
+    Decode{Win{dp, pr, n, w, h, x, y, f, v, k, r, tm, fr, hz}, out, ask, rl, at, pa, tx}, Resized{w, h})
 
 def configure.place(synthetic: Bool, d: Decode, +x: F32, +y: F32) -> Decode:
   match synthetic:
@@ -265,18 +291,18 @@ def configure.place(synthetic: Bool, d: Decode, +x: F32, +y: F32) -> Decode:
       Decode{win, out, ask, r, t, pa, tx} = d
       Decode{win, out, True{}, 0, 0, pa, tx}
     case True{}:
-      Decode{Win{dp, pr, n, w, h, +ox, +oy, f, v, k, r, tm}, out, ask, rl, at, pa, tx} = d
+      Decode{Win{dp, pr, n, w, h, +ox, +oy, f, v, k, r, tm, fr, hz}, out, ask, rl, at, pa, tx} = d
       maybe_emit(F32.is_ne(ox, x) || F32.is_ne(oy, y),
-        Decode{Win{dp, pr, n, w, h, x, y, f, v, k, r, tm}, out, ask, rl, at, pa, tx}, Moved{x, y})
+        Decode{Win{dp, pr, n, w, h, x, y, f, v, k, r, tm, fr, hz}, out, ask, rl, at, pa, tx}, Moved{x, y})
 
 def configure(d: Decode, +w: U32, +h: U32, +x: U32, +y: U32, +synthetic: U32) -> Decode:
   configure.place(U32.is_ne(synthetic, 0), configure.size(d, w, h), signed(x), signed(y))
 
 def focus.change(d: Decode, +gained: Bool) -> Decode:
-  Decode{Win{dp, pr, n, w, h, x, y, +was, v, k, r, tm}, out, ask, rl, at, pa, tx} = d
+  Decode{Win{dp, pr, n, w, h, x, y, +was, v, k, r, tm, fr, hz}, out, ask, rl, at, pa, tx} = d
   +held = Bool.pick(List<&2, U32>, gained, k, Nil{})
   maybe_emit(Bool.xor(was, gained),
-    Decode{Win{dp, pr, n, w, h, x, y, gained, v, held, r, tm}, out, ask, rl, at, pa, tx}, Focused{gained})
+    Decode{Win{dp, pr, n, w, h, x, y, gained, v, held, r, tm, fr, hz}, out, ask, rl, at, pa, tx}, Focused{gained})
 
 def focus.pick(ignored: Bool, d: Decode, +gained: Bool) -> Decode:
   match ignored:
@@ -290,10 +316,10 @@ def focus(d: Decode, +gained: U32, +mode: U32, +detail: U32) -> Decode:
     U32.is_eq(detail, 5), d, U32.is_ne(gained, 0))
 
 def shown(d: Decode, +mapped: U32) -> Decode:
-  Decode{Win{dp, pr, n, w, h, x, y, f, +was, k, r, tm}, out, ask, rl, at, pa, tx} = d
+  Decode{Win{dp, pr, n, w, h, x, y, f, +was, k, r, tm, fr, hz}, out, ask, rl, at, pa, tx} = d
   +now = U32.is_ne(mapped, 0)
   maybe_emit(Bool.xor(was, now),
-    Decode{Win{dp, pr, n, w, h, x, y, f, now, k, r, tm}, out, ask, rl, at, pa, tx}, Shown{now})
+    Decode{Win{dp, pr, n, w, h, x, y, f, now, k, r, tm, fr, hz}, out, ask, rl, at, pa, tx}, Shown{now})
 
 def drop_head(drop: Bool, xs: List<&2, Input>) -> List<&2, Input>:
   match drop xs:
@@ -305,17 +331,17 @@ def drop_head(drop: Bool, xs: List<&2, Input>) -> List<&2, Input>:
 # A press right after a release of the same key with the same timestamp is
 # X autorepeat without detection: drop that release, flag the press.
 def key.press(d: Decode, +code: U32, +keycode: U32, +mods: U32, +time: U32) -> Decode:
-  Decode{Win{dp, pr, n, w, h, x, y, f, v, +held, r, tm}, out, ask, +release, +at, pa, tx} = d
+  Decode{Win{dp, pr, n, w, h, x, y, f, v, +held, r, tm, fr, hz}, out, ask, +release, +at, pa, tx} = d
   +pair = U32.is_ne(release, 0) && U32.is_eq(release, keycode) && U32.is_eq(at, time)
   +repeat = pair || has(held, keycode)
   +now = Bool.pick(List<&2, U32>, has(held, keycode), held, keycode <> held)
-  Decode{Win{dp, pr, n, w, h, x, y, f, v, now, r, tm},
+  Decode{Win{dp, pr, n, w, h, x, y, f, v, now, r, tm, fr, hz},
     KeyDown{code, repeat, mods} <> drop_head(pair, out),
     ask, 0, 0, pa, tx}
 
 def key.release(d: Decode, +code: U32, +keycode: U32, +mods: U32, +time: U32) -> Decode:
-  Decode{Win{dp, pr, n, w, h, x, y, f, v, held, r, tm}, out, ask, rl, at, pa, tx} = d
-  Decode{Win{dp, pr, n, w, h, x, y, f, v, without(held, keycode), r, tm},
+  Decode{Win{dp, pr, n, w, h, x, y, f, v, held, r, tm, fr, hz}, out, ask, rl, at, pa, tx} = d
+  Decode{Win{dp, pr, n, w, h, x, y, f, v, without(held, keycode), r, tm, fr, hz},
     KeyUp{code, mods} <> out, ask, keycode, time, pa, tx}
 
 # Keycode 0 is the press an input method puts back with its result.
@@ -337,8 +363,8 @@ def key(d: Decode, +sym: U32, +keycode: U32, +down: U32, +state: U32, +chars: U3
   key.pick(U32.is_ne(down, 0), d, Keys.code(sym, keycode, chars), keycode, Keys.mods(state), time)
 
 def stamp(d: Decode, +time: U32) -> Decode:
-  Decode{Win{dp, pr, n, w, h, x, y, f, v, k, r, tm}, out, ask, rl, at, pa, tx} = d
-  Decode{Win{dp, pr, n, w, h, x, y, f, v, k, r, time}, out, ask, rl, at, pa, tx}
+  Decode{Win{dp, pr, n, w, h, x, y, f, v, k, r, tm, fr, hz}, out, ask, rl, at, pa, tx} = d
+  Decode{Win{dp, pr, n, w, h, x, y, f, v, k, r, time, fr, hz}, out, ask, rl, at, pa, tx}
 
 # Text
 # ----
@@ -500,7 +526,7 @@ def one(k: U32, d: Decode, +a: U32, +b: U32, +c: U32, +e: U32, +f: U32, +g: U32)
       keep(d)
 
 def slot_of(d: Decode) -> U32:
-  Decode{Win{dp, pr, n, w, h, x, y, f, v, k, r, tm}, out, ask, rl, at, pa, tx} = d
+  Decode{Win{dp, pr, n, w, h, x, y, f, v, k, r, tm, fr, hz}, out, ask, rl, at, pa, tx} = d
   n
 
 def step.mine(mine: Bool, d: Decode, +k: U32, +a: U32, +b: U32, +c: U32, +e: U32, +f: U32, +g: U32) -> Decode:
@@ -530,6 +556,85 @@ def decoded(d: Decode) -> Win & List<&2, Input> & Bool & Bool:
 def decode(ws: List<&2, U32>, win: Win) -> Win & List<&2, Input> & Bool & Bool:
   decoded(decode.go(ws, Decode{win, Nil{}, False{}, 0, 0, False{}, Nil{}}))
 
+# Monitors and refresh
+# --------------------
+#
+# `x11_monitors` answers RandR's active CRTCs, eight words each: x y width
+# height (root coordinates, signed) and the mode's dotClock (Hz), hTotal,
+# vTotal and flags. The policy is here: a mode refreshes dotClock / (hTotal
+# x vTotal) times a second, twice that when interlaced (flag 0x10), half
+# when doublescanned (0x20); the window is on the CRTC it overlaps most
+# (the first one on a tie); a window that overlaps none keeps the rate it
+# had.
+
+# A mode's refresh in millihertz (0 for a degenerate mode).
+def mode_mhz(+dot: U32, +htotal: U32, +vtotal: U32, +flags: U32) -> U32:
+  +lines = Nat.mul(U32.to_nat(vtotal),
+    Bool.pick(Nat, U32.is_ne((flags .&. 32 : U32), 0), 2n, 1n))
+  +mhz = Nat.div(Nat.mul(U32.to_nat(dot), 1000n), Nat.mul(U32.to_nat(htotal), lines))
+  U32.from_nat(Bool.pick(Nat, U32.is_ne((flags .&. 16 : U32), 0), Nat.mul(mhz, 2n), mhz))
+
+# The length of [a0, a0 + al) ∩ [b0, b0 + bl), 0 when they do not meet.
+def span(+a0: F32, +al: F32, +b0: F32, +bl: F32) -> F32:
+  F32.max(0.0, (F32.min((a0 + al : F32), (b0 + bl : F32)) - F32.max(a0, b0) : F32))
+
+type Pick is Data:
+  Pick{area: F32, mhz: U32}
+
+def pick.better(+p: Pick, +area: F32, +mhz: U32) -> Pick:
+  Pick{best, old} = p
+  Bool.pick(Pick, F32.is_gt(area, best), Pick{area, mhz}, p)
+
+def pick.go(ws: List<&2, U32>, +x: F32, +y: F32, +w: F32, +h: F32, +p: Pick) -> Pick:
+  match ws:
+    case Con{cx, Con{cy, Con{cw, Con{ch, Con{dot, Con{ht, Con{vt, Con{fl, rest}}}}}}}}:
+      pick.go(rest, x, y, w, h, pick.better(p,
+        (span(x, w, signed(cx), U32.to_f32(cw)) * span(y, h, signed(cy), U32.to_f32(ch)) : F32),
+        mode_mhz(dot, ht, vt, fl)))
+    case _:
+      p
+
+# The refresh (mHz) of the CRTC the window rectangle overlaps most, or
+# `old` when it overlaps none.
+def picked(p: Pick, +old: U32) -> U32:
+  Pick{area, +mhz} = p
+  Bool.pick(U32, U32.is_eq(mhz, 0), old, mhz)
+
+def refresh_of(ws: List<&2, U32>, +x: F32, +y: F32, +w: U32, +h: U32, +old: U32) -> U32:
+  picked(pick.go(ws, x, y, U32.to_f32(w), U32.to_f32(h), Pick{0.0, old}), old)
+
+# Asks RandR for the monitors and records the refresh of the one the window
+# is on. One round trip per CRTC; run on open, moves and maps only.
+def monitors(+w: Win) -> IO(Win):
+  do IO<Win>:
+    +ws : List<&2, U32> <- IO.try(List<&2, U32>, N.x11_monitors(window(w)))
+    return with_refresh(w, refresh_of(ws, position_x(w), position_y(w), width(w), height(w), refresh(w)))
+
+# Whether a batch can have changed the monitor under the window.
+def relocated(es: List<&2, Input>) -> Bool:
+  match es:
+    case Nil{}:
+      False{}
+    case Con{Moved{x, y}, rest}:
+      True{}
+    case Con{Shown{True{}}, rest}:
+      True{}
+    case Con{e, rest}:
+      relocated(rest)
+
+def remonitored(again: Bool, +w: Win, es: List<&2, Input>) -> IO(Win & List<&2, Input>):
+  match again:
+    case False{}:
+      IO.pure(Win & List<&2, Input>, (w, es))
+    case True{}:
+      do IO<Win & List<&2, Input>>:
+        +w2 : Win <- monitors(w)
+        return (w2, es)
+
+def remonitor(got: Win & List<&2, Input>) -> IO(Win & List<&2, Input>):
+  (+w, +es) = got
+  remonitored(relocated(es), w, es)
+
 # Opening and closing
 # -------------------
 
@@ -554,7 +659,8 @@ def open.window(o: Options, +dpy: U32) -> IO(Win):
     # Text input through Xlib's local input method (dead keys, compose,
     # AltGr); without one, text arrives as keysyms.
     +im : U32 <- IO.try(U32, N.x11_input(win))
-    return Win{dpy, presenter, win, w, h, 0.0, 0.0, False{}, False{}, Nil{}, U32.is_ne(repeat, 0), 0}
+    # The refresh rate of the monitor the window starts on (RandR).
+    monitors(Win{dpy, presenter, win, w, h, 0.0, 0.0, False{}, False{}, Nil{}, U32.is_ne(repeat, 0), 0, 0, 0})
 
 def open.connected(r: Result<&1, &1, U32 & String, U32>, o: Options) ->
   IO(Result<&1, &1, U32 & String, Win>):
@@ -589,7 +695,7 @@ def open(o: Options) -> IO(Result<&1, &1, U32 & String, Win>):
 # Answers how many native objects the bridge still holds (0 when nothing
 # leaked). Destroy every GPU surface made from the window first.
 def close(w: Win) -> IO(U32):
-  Win{+dpy, +pr, +win, wd, h, x, y, f, v, k, r, tm} = w
+  Win{+dpy, +pr, +win, wd, h, x, y, f, v, k, r, tm, fr, hz} = w
   do IO<U32>:
     IO.try(Unit, N.x11_destroy(win))
     IO.try(Unit, N.x11_destroy(pr))
@@ -602,7 +708,7 @@ def set_title(+w: Win, title: String) -> IO(Win):
     return w
 
 def presenter(w: Win) -> U32:
-  Win{d, presenter, n, wd, h, x, y, f, v, k, r, tm} = w
+  Win{d, presenter, n, wd, h, x, y, f, v, k, r, tm, fr, hz} = w
   presenter
 
 # The native handle for a GPU surface: [1 (Xlib), Display* high word,
@@ -622,8 +728,8 @@ def placed.at(moved: Bool, w: Win, es: List<&2, Input>, +x: F32, +y: F32) -> Win
     case False{}:
       (w, es)
     case True{}:
-      Win{dp, pr, n, wd, h, ox, oy, f, v, k, r, tm} = w
-      (Win{dp, pr, n, wd, h, x, y, f, v, k, r, tm}, List.append(&2, Input, es, [Moved{x, y}]))
+      Win{dp, pr, n, wd, h, ox, oy, f, v, k, r, tm, fr, hz} = w
+      (Win{dp, pr, n, wd, h, x, y, f, v, k, r, tm, fr, hz}, List.append(&2, Input, es, [Moved{x, y}]))
 
 def placed(at: List<&2, U32>, +w: Win, es: List<&2, Input>) -> Win & List<&2, Input>:
   match at:
@@ -670,7 +776,8 @@ def waited(d: Win & List<&2, Input> & Bool & Bool) -> IO(Win & List<&2, Input>):
   (ask, paste) = flags
   do IO<Win & List<&2, Input>>:
     got : Win & List<&2, Input> <- asked(ask, w, es)
-    pasted(paste, got)
+    done : Win & List<&2, Input> <- pasted(paste, got)
+    remonitor(done)
 
 # Whether the bridge's words hold the record (kind 14) saying the watched
 # descriptor is readable. It names no window, so `decode` skips it.

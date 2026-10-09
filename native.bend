@@ -53,6 +53,11 @@ def x11_native(window: U32, display: U32) ->
   import "./native/ankra.c"
   import "./native/ankra.js"
 
+def x11_monitors(window: U32) ->
+  IO(Result<&1, &1, U32 & String, List<&2, U32>>):
+  import "./native/ankra.c"
+  import "./native/ankra.js"
+
 def x11_wait(display: U32, ms: U32) ->
   IO(Result<&1, &1, U32 & String, List<&2, U32>>):
   import "./native/ankra.c"
