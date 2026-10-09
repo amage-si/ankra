@@ -24,6 +24,8 @@
 
 #include <locale.h>
 #include <poll.h>
+#include <sys/epoll.h>
+#include <unistd.h>
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
 #include <X11/Xutil.h>
@@ -47,6 +49,8 @@ typedef struct {
   XIM      im;       // a display's input method once x11_input ran
   XIC      ic;       // a window's input context once x11_input ran
   Atom     atom[AK_ATOMS];  // a display's atoms, None until ak_atoms
+  int      set;      // a display's epoll set + 1 once x11_watch ran, else 0
+  int      watched;  // the descriptor its waits also watch + 1, else 0
 } AkSlot;
 
 #define AK_SLOTS 256
@@ -423,6 +427,7 @@ static void __attribute__((constructor)) ak_x11_native_use(void) {
 // 11 request    requestor property target_code time clipboard target
 // 12 clear      clipboard time
 // 13 notify     ok clipboard
+// 14 watched    (window slot 0) the descriptor of x11_watch is readable
 // Signed values travel as 32-bit two's complement. `keysym` and `chars`
 // come from XLookupString with only Shift and Lock applied (Ctrl and Alt do
 // not change the symbol); `chars` is count << 8 | first byte; `state` is
@@ -574,8 +579,10 @@ static void ak_event(AkSlot* d, XEvent* ev, AkOut* o) {
 
 // Drains the events already received (XPending reads what the socket holds
 // without blocking) into one word list. With an input method, an event it
-// filters (part of a dead-key or compose sequence) gives no record.
-static Term ak_events(Env e, AkSlot* d) {
+// filters (part of a dead-key or compose sequence) gives no record. When
+// the watched descriptor (x11_watch) is readable, a last record says so:
+// kind 14, window slot 0.
+static Term ak_events(Env e, AkSlot* d, int watched) {
   AkOut o = { 0 };
   while (XPending(d->dpy) > 0) {
     XEvent ev;
@@ -585,9 +592,36 @@ static Term ak_events(Env e, AkSlot* d) {
     }
     ak_event(d, &ev, &o);
   }
+  if (watched) {
+    u32 k[AK_EVENT_WORDS] = { 14 };
+    ak_push(&o, k);
+  }
   Term list = ak_list(e, o.w, o.n);
   free(o.w);
   return list;
+}
+
+// What a display's waits park on: its epoll set (the connection and the
+// watched descriptor) once x11_watch ran, else the connection.
+static int ak_wait_fd(AkSlot* d) {
+  return d->set != 0 ? d->set - 1 : ConnectionNumber(d->dpy);
+}
+
+// Whether the watched descriptor is readable (or hung up), asked of the
+// epoll set: a descriptor closed since x11_watch has left the set and
+// never counts, even if its number is reused.
+static int ak_watched(AkSlot* d) {
+  if (d->set == 0 || d->watched == 0) {
+    return 0;
+  }
+  struct epoll_event ev[2];
+  int n = epoll_wait(d->set - 1, ev, 2, 0);
+  for (int i = 0; i < n; i += 1) {
+    if (ev[i].data.fd == d->watched - 1) {
+      return 1;
+    }
+  }
+  return 0;
 }
 
 static Term ak_x11_wait_more(Env e, IoWork* w) {
@@ -596,18 +630,19 @@ static Term ak_x11_wait_more(Env e, IoWork* w) {
     return AK_BAD(e, "display");
   }
   u64 due = w->size;
-  if (XPending(d->dpy) == 0 && (due == 0 || io_tick() < due)) {
+  int watched = ak_watched(d);
+  if (XPending(d->dpy) == 0 && !watched && (due == 0 || io_tick() < due)) {
     // Woken by bytes that held no event (a reply, a partial read): park
     // again until an event arrives or the deadline passes.
-    return io_wait_on(w, ConnectionNumber(d->dpy), POLLIN, due,
-      ak_x11_wait_more);
+    return io_wait_on(w, ak_wait_fd(d), POLLIN, due, ak_x11_wait_more);
   }
-  return io_done(e, ak_events(e, d));
+  return io_done(e, ak_events(e, d, watched));
 }
 
 // Waits up to `ms` for events on a display: 0 polls, 4294967295 waits
-// without a deadline. The wait parks on the X connection's socket in the
-// runtime's event loop: no thread spins and no timer fires while idle.
+// without a deadline. The wait parks on the X connection's socket (or the
+// epoll set of x11_watch) in the runtime's event loop: no thread spins and
+// no timer fires while idle.
 Term ak_x11_wait_run(Env e, Term* f, IoWork* w) {
   u32 id = (u32)f[0];
   u32 ms = (u32)f[1];
@@ -616,16 +651,63 @@ Term ak_x11_wait_run(Env e, Term* f, IoWork* w) {
     return AK_BAD(e, "display");
   }
   if (ms == 0 || XPending(d->dpy) > 0) {
-    return io_done(e, ak_events(e, d));
+    return io_done(e, ak_events(e, d, ak_watched(d)));
   }
   w->hand = (intptr_t)id;
   w->size = ms == 0xFFFFFFFFu ? 0 : io_tick() + (u64)ms * 1000000ull;
-  return io_wait_on(w, ConnectionNumber(d->dpy), POLLIN, w->size,
-    ak_x11_wait_more);
+  return io_wait_on(w, ak_wait_fd(d), POLLIN, w->size, ak_x11_wait_more);
 }
 
 static void __attribute__((constructor)) ak_x11_wait_use(void) {
   io_eff(CID(x11_wait), ak_x11_wait_run, 0);
+}
+
+#endif
+
+#ifdef CID(x11_watch)
+
+// Makes a display's waits also end when `fd` is readable (a second event
+// source, such as a bus socket); 0xFFFFFFFF stops watching. The first call
+// makes an epoll set (epoll_create1 + epoll_ctl) holding the X connection;
+// each call replaces the watched descriptor. A descriptor closed later
+// leaves the set by itself.
+Term ak_x11_watch_run(Env e, Term* f, IoWork* w) {
+  AkSlot* d = ak_get((u32)f[0], AK_DISPLAY);
+  u32 fd = (u32)f[1];
+  if (d == NULL) {
+    return AK_BAD(e, "display");
+  }
+  if (d->set == 0) {
+    int set = epoll_create1(EPOLL_CLOEXEC);
+    struct epoll_event ev = { .events = EPOLLIN };
+    ev.data.fd = ConnectionNumber(d->dpy);
+    if (set < 0 || epoll_ctl(set, EPOLL_CTL_ADD, ev.data.fd, &ev) != 0) {
+      int code = errno;
+      if (set >= 0) {
+        close(set);
+      }
+      return io_fail(e, (u32)code, "Ankra: cannot make an epoll set");
+    }
+    d->set = set + 1;
+  }
+  if (d->watched != 0) {
+    // Fails harmlessly when the descriptor was closed (already gone).
+    epoll_ctl(d->set - 1, EPOLL_CTL_DEL, d->watched - 1, NULL);
+    d->watched = 0;
+  }
+  if (fd != 0xFFFFFFFFu) {
+    struct epoll_event ev = { .events = EPOLLIN };
+    ev.data.fd = (int)fd;
+    if (epoll_ctl(d->set - 1, EPOLL_CTL_ADD, (int)fd, &ev) != 0) {
+      return io_fail(e, (u32)errno, "Ankra: cannot watch the descriptor");
+    }
+    d->watched = (int)fd + 1;
+  }
+  return AK_UNIT(e);
+}
+
+static void __attribute__((constructor)) ak_x11_watch_use(void) {
+  io_eff(CID(x11_watch), ak_x11_watch_run, 0);
 }
 
 #endif
@@ -876,7 +958,8 @@ static void __attribute__((constructor)) ak_x11_clip_take_use(void) {
 #ifdef CID(x11_destroy)
 
 // XDestroyIC (if any) and XDestroyWindow for a window slot (then XFlush),
-// XCloseIM (if any) and XCloseDisplay for a display slot. Bend destroys windows before their display.
+// XCloseIM (if any), the epoll set of x11_watch (if any) and XCloseDisplay
+// for a display slot. Bend destroys windows before their display.
 Term ak_x11_destroy_run(Env e, Term* f, IoWork* w) {
   u32 id = (u32)f[0];
   if (id == 0 || id >= AK_SLOTS || ak_slot[id].kind == AK_FREE) {
@@ -892,6 +975,9 @@ Term ak_x11_destroy_run(Env e, Term* f, IoWork* w) {
   } else {
     if (s->im != NULL) {
       XCloseIM(s->im);
+    }
+    if (s->set != 0) {
+      close(s->set - 1);
     }
     XCloseDisplay(s->dpy);
   }

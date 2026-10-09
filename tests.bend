@@ -266,6 +266,8 @@ def main() -> IO(Unit):
     check(is_shown(events(ev(9, 0, 0, 0, 0, 0, 0)), False{}), "map: unmapping reported")
     check(W.closing(events(ev(1, 0, 0, 0, 0, 0, 0))), "close request")
     check(none(events([1, 3, 0, 0, 0, 0, 0, 0])), "events of another window are not ours")
+    check(W.watched(cat([ev(6, 1, 2, 0, 0, 0, 0), [14, 0, 0, 0, 0, 0, 0, 0]])) && is_pointer(events(cat([ev(6, 1, 2, 0, 0, 0, 0), [14, 0, 0, 0, 0, 0, 0, 0]])), 1.0, 2.0) &&
+      Bool.not(W.watched(ev(6, 14, 14, 0, 0, 0, 0))), "watch: the watched descriptor's record ends a wait and decodes to nothing")
     check(F32.is_eq(W.signed(4294967295), F32.neg(1.0)), "signed coordinates")
     check(finished(Loop.next(U32, True{}, win(), Loop.Keep{7}, False{}), 7), "loop: a close request finishes after update")
     check(continued(Loop.next(U32, False{}, win(), Loop.Keep{7}, True{}), 7, True{}, W.forever()), "loop: Keep waits without deadline, an owed frame stays owed")
@@ -307,4 +309,4 @@ def main() -> IO(Unit):
       is_latin1(C.answer(C.Clip{True{}, "ã"}, request(4)), "ã"), "clipboard answer: € refused as STRING; TEXT falls back to UTF-8")
     check(is_refused(C.answer(C.Clip{True{}, "a"}, request(0))) && is_refused(C.answer(C.Clip{False{}, "a"}, request(2))) &&
       is_refused(C.answer(C.none(), request(1))), "clipboard answer: unknown target, or a clipboard not owned, is refused")
-    IO.print("61 Ankra checks passed")
+    IO.print("62 Ankra checks passed")

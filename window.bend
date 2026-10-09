@@ -672,11 +672,33 @@ def waited(d: Win & List<&2, Input> & Bool & Bool) -> IO(Win & List<&2, Input>):
     got : Win & List<&2, Input> <- asked(ask, w, es)
     pasted(paste, got)
 
-# One wait on the connection, decoded.
-def wait.once(+w: Win, ms: U32) -> IO(Win & List<&2, Input>):
-  do IO<Win & List<&2, Input>>:
+# Whether the bridge's words hold the record (kind 14) saying the watched
+# descriptor is readable. It names no window, so `decode` skips it.
+def watched(ws: List<&2, U32>) -> Bool:
+  match ws:
+    case Con{14, rest}:
+      True{}
+    case Con{k, Con{s, Con{a, Con{b, Con{c, Con{e, Con{f, Con{g, rest}}}}}}}}:
+      watched(rest)
+    case _:
+      False{}
+
+def waited.with(+woke: Bool, got: Win & List<&2, Input>) -> Win & List<&2, Input> & Bool:
+  (w, es) = got
+  (w, es, woke)
+
+# One wait on the connection, decoded, and whether the watched descriptor
+# ended it.
+def wait.once(+w: Win, ms: U32) -> IO(Win & List<&2, Input> & Bool):
+  do IO<Win & List<&2, Input> & Bool>:
     +ws : List<&2, U32> <- IO.try(List<&2, U32>, N.x11_wait(display(w), ms))
-    waited(decode(ws, w))
+    got : Win & List<&2, Input> <- waited(decode(ws, w))
+    return waited.with(watched(ws), got)
+
+def wait.plain(got: Win & List<&2, Input> & Bool) -> Win & List<&2, Input>:
+  (w, rest) = got
+  (es, woke) = rest
+  (w, es)
 
 # The milliseconds left before `due`, or `forever()` without a deadline.
 def wait.left(+forever: Bool, +due: Nat, +now: Nat) -> U32:
@@ -693,15 +715,18 @@ def wait.sorted(es: List<&2, Input>, +w: Win, +over: Bool,
     case xs _:
       IO.pure(Win & List<&2, Input>, (w, xs))
 
-def wait.until(n: Nat, got: Win & List<&2, Input>, +forever: Bool, +due: Nat) -> IO(Win & List<&2, Input>):
+# Waits again while nothing decoded, the deadline is ahead and the watched
+# descriptor did not end the wait.
+def wait.until(n: Nat, got: Win & List<&2, Input> & Bool, +forever: Bool, +due: Nat) -> IO(Win & List<&2, Input>):
   match n:
     case 0n:
-      IO.pure(Win & List<&2, Input>, got)
+      IO.pure(Win & List<&2, Input>, wait.plain(got))
     case 1n+p:
-      (+w, es) = got
+      (+w, rest) = got
+      (es, woke) = rest
       do IO<Win & List<&2, Input>>:
         +now : Nat <- IO.now()
-        wait.sorted(es, w, wait.over(forever, due, now), ww => IO.bind(Win & List<&2, Input>,
+        wait.sorted(es, w, woke || wait.over(forever, due, now), ww => IO.bind(Win & List<&2, Input> & Bool,
           Win & List<&2, Input>, wait.once(ww, wait.left(forever, due, now)),
           g => wait.until(p, g, forever, due)))
 
@@ -709,21 +734,38 @@ def wait.timed(+w: Win, +ms: U32) -> IO(Win & List<&2, Input>):
   +forever = U32.is_eq(ms, forever())
   do IO<Win & List<&2, Input>>:
     +start : Nat <- IO.now()
-    got : Win & List<&2, Input> <- wait.once(w, ms)
+    got : Win & List<&2, Input> & Bool <- wait.once(w, ms)
     wait.until(4294967295n, got, forever, Nat.add(start, U32.to_nat(ms)))
 
 def wait.pick(poll: Bool, +w: Win, +ms: U32) -> IO(Win & List<&2, Input>):
   match poll:
     case True{}:
-      wait.once(w, 0)
+      do IO<Win & List<&2, Input>>:
+        got : Win & List<&2, Input> & Bool <- wait.once(w, 0)
+        return wait.plain(got)
     case False{}:
       wait.timed(w, ms)
 
 # Waits up to `ms` milliseconds for events: 0 polls, `forever()` waits
-# without a deadline. The wait parks on the X connection: an idle window
-# costs no CPU and no wakeups. Answers the next window state and the
-# decoded events in order. An empty list means the deadline passed: X
+# without a deadline. The wait parks on the X connection (and the watched
+# descriptor, see `watch`): an idle window costs no CPU and no wakeups.
+# Answers the next window state and the decoded events in order. An empty
+# list means the deadline passed or the watched descriptor is readable: X
 # events that decode to nothing (a configure that changed nothing, an
 # ignored focus change) do not end the wait early.
 def wait(+w: Win, +ms: U32) -> IO(Win & List<&2, Input>):
   wait.pick(U32.is_eq(ms, 0), w, ms)
+
+# Makes every later wait also end when the file descriptor `fd` is
+# readable (or hung up): a second event source, such as an accessibility
+# bus socket, without polling it on a timer. `unwatched()` stops. The wait
+# answers the window's events, possibly none; the app then reads `fd`
+# itself. Reading it until it would block keeps the next wait asleep. A
+# descriptor closed later stops counting by itself.
+def watch(+w: Win, fd: U32) -> IO(Win):
+  do IO<Win>:
+    IO.try(Unit, N.x11_watch(display(w), fd))
+    return w
+
+def unwatched() -> U32:
+  4294967295

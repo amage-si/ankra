@@ -58,6 +58,11 @@ def x11_wait(display: U32, ms: U32) ->
   import "./native/ankra.c"
   import "./native/ankra.js"
 
+def x11_watch(display: U32, fd: U32) ->
+  IO(Result<&1, &1, U32 & String, Unit>):
+  import "./native/ankra.c"
+  import "./native/ankra.js"
+
 def x11_input(window: U32) -> IO(Result<&1, &1, U32 & String, U32>):
   import "./native/ankra.c"
   import "./native/ankra.js"
