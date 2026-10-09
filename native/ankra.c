@@ -168,7 +168,7 @@ Term ak_x11_connect_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) ak_x11_connect_use(void) {
-  io_eff(CID(x11_connect), ak_x11_connect_run, 0);
+  io_eff(CID(x11_connect), ak_x11_connect_run);
 }
 
 #endif
@@ -209,7 +209,7 @@ Term ak_x11_create_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) ak_x11_create_use(void) {
-  io_eff(CID(x11_create), ak_x11_create_run, 0);
+  io_eff(CID(x11_create), ak_x11_create_run);
 }
 
 #endif
@@ -229,7 +229,7 @@ Term ak_x11_protocols_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) ak_x11_protocols_use(void) {
-  io_eff(CID(x11_protocols), ak_x11_protocols_run, 0);
+  io_eff(CID(x11_protocols), ak_x11_protocols_run);
 }
 
 #endif
@@ -255,7 +255,7 @@ Term ak_x11_title_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) ak_x11_title_use(void) {
-  io_eff(CID(x11_title), ak_x11_title_run, 0);
+  io_eff(CID(x11_title), ak_x11_title_run);
 }
 
 #endif
@@ -282,7 +282,7 @@ Term ak_x11_class_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) ak_x11_class_use(void) {
-  io_eff(CID(x11_class), ak_x11_class_run, 0);
+  io_eff(CID(x11_class), ak_x11_class_run);
 }
 
 #endif
@@ -312,7 +312,7 @@ Term ak_x11_size_hints_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) ak_x11_size_hints_use(void) {
-  io_eff(CID(x11_size_hints), ak_x11_size_hints_run, 0);
+  io_eff(CID(x11_size_hints), ak_x11_size_hints_run);
 }
 
 #endif
@@ -334,7 +334,7 @@ Term ak_x11_autorepeat_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) ak_x11_autorepeat_use(void) {
-  io_eff(CID(x11_autorepeat), ak_x11_autorepeat_run, 0);
+  io_eff(CID(x11_autorepeat), ak_x11_autorepeat_run);
 }
 
 #endif
@@ -353,7 +353,7 @@ Term ak_x11_map_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) ak_x11_map_use(void) {
-  io_eff(CID(x11_map), ak_x11_map_run, 0);
+  io_eff(CID(x11_map), ak_x11_map_run);
 }
 
 #endif
@@ -376,7 +376,7 @@ Term ak_x11_position_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) ak_x11_position_use(void) {
-  io_eff(CID(x11_position), ak_x11_position_run, 0);
+  io_eff(CID(x11_position), ak_x11_position_run);
 }
 
 #endif
@@ -402,7 +402,7 @@ Term ak_x11_native_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) ak_x11_native_use(void) {
-  io_eff(CID(x11_native), ak_x11_native_run, 0);
+  io_eff(CID(x11_native), ak_x11_native_run);
 }
 
 #endif
@@ -659,7 +659,7 @@ Term ak_x11_wait_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) ak_x11_wait_use(void) {
-  io_eff(CID(x11_wait), ak_x11_wait_run, 0);
+  io_eff(CID(x11_wait), ak_x11_wait_run);
 }
 
 #endif
@@ -707,7 +707,7 @@ Term ak_x11_watch_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) ak_x11_watch_use(void) {
-  io_eff(CID(x11_watch), ak_x11_watch_run, 0);
+  io_eff(CID(x11_watch), ak_x11_watch_run);
 }
 
 #endif
@@ -753,7 +753,7 @@ Term ak_x11_input_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) ak_x11_input_use(void) {
-  io_eff(CID(x11_input), ak_x11_input_run, 0);
+  io_eff(CID(x11_input), ak_x11_input_run);
 }
 
 #endif
@@ -787,7 +787,7 @@ Term ak_x11_clip_own_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) ak_x11_clip_own_use(void) {
-  io_eff(CID(x11_clip_own), ak_x11_clip_own_run, 0);
+  io_eff(CID(x11_clip_own), ak_x11_clip_own_run);
 }
 
 #endif
@@ -859,7 +859,7 @@ Term ak_x11_clip_reply_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) ak_x11_clip_reply_use(void) {
-  io_eff(CID(x11_clip_reply), ak_x11_clip_reply_run, 0);
+  io_eff(CID(x11_clip_reply), ak_x11_clip_reply_run);
 }
 
 #endif
@@ -882,7 +882,7 @@ Term ak_x11_clip_ask_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) ak_x11_clip_ask_use(void) {
-  io_eff(CID(x11_clip_ask), ak_x11_clip_ask_run, 0);
+  io_eff(CID(x11_clip_ask), ak_x11_clip_ask_run);
 }
 
 #endif
@@ -947,7 +947,7 @@ Term ak_x11_clip_take_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) ak_x11_clip_take_use(void) {
-  io_eff(CID(x11_clip_take), ak_x11_clip_take_run, 0);
+  io_eff(CID(x11_clip_take), ak_x11_clip_take_run);
 }
 
 #endif
@@ -987,7 +987,7 @@ Term ak_x11_destroy_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) ak_x11_destroy_use(void) {
-  io_eff(CID(x11_destroy), ak_x11_destroy_run, 0);
+  io_eff(CID(x11_destroy), ak_x11_destroy_run);
 }
 
 #endif
@@ -1000,7 +1000,7 @@ Term ak_x11_live_run(Env e, Term* f, IoWork* w) {
 }
 
 static void __attribute__((constructor)) ak_x11_live_use(void) {
-  io_eff(CID(x11_live), ak_x11_live_run, 0);
+  io_eff(CID(x11_live), ak_x11_live_run);
 }
 
 #endif
